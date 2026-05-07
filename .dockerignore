@@ -1,0 +1,50 @@
+# Don't bloat the build context with stuff the image doesn't need.
+# Anything listed here is invisible to the Docker build.
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Dev / docs
+README.md
+*.md
+docs/
+.env
+.env.*
+!.env.example
+
+# CI / deploy artifacts
+.github/
+.gitlab-ci.yml
+Dockerfile
+.dockerignore
+
+# Local DB / logs
+*.log
+*.sqlite
+*.db
+
+# Test / coverage
+.coverage
+htmlcov/
+.tox/
