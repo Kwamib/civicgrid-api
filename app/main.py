@@ -1,13 +1,11 @@
 import os
 from contextlib import contextmanager
-from typing import Optional
-from urllib.parse import urlparse, unquote
+from urllib.parse import unquote, urlparse
 
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from psycopg2.pool import SimpleConnectionPool
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from psycopg2.extras import RealDictCursor
+from psycopg2.pool import SimpleConnectionPool
 
 app = FastAPI(
     title="CivicGrid API",
@@ -23,7 +21,7 @@ app.add_middleware(
 )
 
 
-_pool: Optional[SimpleConnectionPool] = None
+_pool: SimpleConnectionPool | None = None
 
 
 def _conn_kwargs():
@@ -32,11 +30,11 @@ def _conn_kwargs():
         raise RuntimeError("DATABASE_URL not set")
     p = urlparse(db_url)
     return {
-        "host":     p.hostname,
-        "port":     p.port or 5432,
-        "user":     unquote(p.username) if p.username else None,
+        "host": p.hostname,
+        "port": p.port or 5432,
+        "user": unquote(p.username) if p.username else None,
         "password": unquote(p.password) if p.password else None,
-        "dbname":   p.path.lstrip("/") or "postgres",
+        "dbname": p.path.lstrip("/") or "postgres",
     }
 
 
@@ -83,18 +81,18 @@ def health():
             row = cur.fetchone()
         return {"status": "ok", "db": row["ok"] == 1}
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"db unavailable: {e}")
+        raise HTTPException(status_code=503, detail=f"db unavailable: {e}") from e
 
 
 @app.get("/cities")
 def list_cities(
-    state:      Optional[str] = Query(None),
-    city_type:  Optional[str] = Query(None),
-    min_pop:    Optional[int] = Query(None, ge=0),
-    max_pop:    Optional[int] = Query(None, ge=0),
-    search:     Optional[str] = Query(None),
-    limit:      int = Query(50, ge=1, le=500),
-    offset:     int = Query(0, ge=0),
+    state: str | None = Query(None),
+    city_type: str | None = Query(None),
+    min_pop: int | None = Query(None, ge=0),
+    max_pop: int | None = Query(None, ge=0),
+    search: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
 ):
     where = []
     params: list = []
@@ -152,7 +150,8 @@ def list_cities(
 @app.get("/cities/{city_id}")
 def get_city(city_id: int):
     with get_cursor() as cur:
-        cur.execute("""
+        cur.execute(
+            """
             select
                 c.*,
                 l.full_name        as leader_name,
@@ -164,17 +163,22 @@ def get_city(city_id: int):
             from cities c
             left join leaders l on l.city_id = c.id and l.is_current = true
             where c.id = %s
-        """, (city_id,))
+        """,
+            (city_id,),
+        )
         city = cur.fetchone()
         if not city:
             raise HTTPException(status_code=404, detail="city not found")
 
-        cur.execute("""
+        cur.execute(
+            """
             select data_source, last_verified_date, created_at
             from provenance
             where city_id = %s
             order by created_at desc
-        """, (city_id,))
+        """,
+            (city_id,),
+        )
         prov = cur.fetchall()
 
     return {"city": city, "provenance": prov}
@@ -182,10 +186,10 @@ def get_city(city_id: int):
 
 @app.get("/leaders/current")
 def list_current_leaders(
-    party:   Optional[str] = Query(None),
-    state:   Optional[str] = Query(None),
-    limit:   int = Query(50, ge=1, le=500),
-    offset:  int = Query(0, ge=0),
+    party: str | None = Query(None),
+    state: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
 ):
     where = ["l.is_current = true"]
     params: list = []
@@ -250,8 +254,8 @@ def stats():
         leaders_by_party = cur.fetchall()
 
     return {
-        "total_cities":        total_cities,
+        "total_cities": total_cities,
         "cities_by_state_top10": cities_by_state_top10,
-        "cities_by_type":      cities_by_type,
-        "leaders_by_party":    leaders_by_party,
+        "cities_by_type": cities_by_type,
+        "leaders_by_party": leaders_by_party,
     }
