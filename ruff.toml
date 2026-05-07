@@ -1,0 +1,20 @@
+# Match the Python version we run in production
+target-version = "py313"
+line-length = 100
+
+[lint]
+# Pick a sensible starter set. Add more as you grow.
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes (unused imports, undefined names)
+    "I",    # isort (import order)
+    "B",    # bugbear (likely bugs)
+    "UP",   # pyupgrade (modern Python idioms)
+]
+ignore = [
+    "E501",  # line too long — handled by formatter
+]
+
+[format]
+quote-style = "double"
+indent-style = "space"
