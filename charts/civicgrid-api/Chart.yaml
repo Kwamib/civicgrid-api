@@ -1,0 +1,12 @@
+apiVersion: v2
+name: civicgrid-api
+description: A Helm chart for the CivicGrid API service
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/Kwamib/civicgrid-api
+sources:
+  - https://github.com/Kwamib/civicgrid-api
+maintainers:
+  - name: Kwame Babatola
+    url: https://github.com/Kwamib

@@ -45,3 +45,32 @@ docker pull ghcr.io/kwamib/civicgrid-api:latest
 ## License
 
 MIT
+
+## Deploy to Kubernetes
+
+A Helm chart is included at `charts/civicgrid-api/`.
+
+```bash
+# Render the chart locally to see what gets deployed
+helm template civicgrid charts/civicgrid-api \
+  --set database.url="$DATABASE_URL"
+
+# Install into a cluster
+helm install civicgrid charts/civicgrid-api \
+  --set database.url="$DATABASE_URL"
+
+# Upgrade after changes
+helm upgrade civicgrid charts/civicgrid-api \
+  --set database.url="$DATABASE_URL"
+```
+
+The chart includes:
+- Deployment with non-root security context, read-only root filesystem, dropped capabilities
+- Service (ClusterIP)
+- ServiceAccount
+- HorizontalPodAutoscaler (CPU-based, 1-3 replicas)
+- Optional Secret for DATABASE_URL (use existing Secret in production)
+- Liveness and readiness probes hitting `/health`
+- Pod anti-affinity to spread replicas across nodes
+
+In production, prefer `existingSecret` over passing `database.url` directly. Pair with Sealed Secrets or External Secrets Operator.
