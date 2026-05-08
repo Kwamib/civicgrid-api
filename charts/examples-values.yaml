@@ -1,0 +1,34 @@
+# Example values overrides for different environments.
+# Copy and modify per environment. NEVER put real secrets here.
+#
+# Usage:
+#   helm install civicgrid charts/civicgrid-api -f examples-values.yaml \
+#     --set database.url="$DATABASE_URL"
+
+# Production-like overrides
+replicaCount: 2
+
+image:
+  # Pin to a SHA in production for immutability
+  tag: "sha-46fb602"
+  pullPolicy: Always
+
+resources:
+  requests:
+    cpu: 200m
+    memory: 192Mi
+  limits:
+    cpu: 1000m
+    memory: 384Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+
+# In real production, use Sealed Secrets / External Secrets Operator
+# and reference the resulting Secret here:
+# database:
+#   existingSecret: civicgrid-database-prod
+#   existingSecretKey: DATABASE_URL
