@@ -87,3 +87,13 @@ affinity:
 
 nodeSelector: {}
 tolerations: []
+
+# ServiceMonitor for Prometheus Operator integration.
+# Disabled by default; clusters without Prometheus Operator (no ServiceMonitor CRD)
+# would fail to install the chart otherwise.
+serviceMonitor:
+  enabled: false
+  path: /metrics
+  interval: 30s
+  scrapeTimeout: 10s
+  additionalLabels: {}
