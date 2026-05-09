@@ -4,6 +4,7 @@ from urllib.parse import unquote, urlparse
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from prometheus_fastapi_instrumentator import Instrumentator
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 
@@ -19,6 +20,9 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
+
+# Prometheus instrumentation: exposes /metrics for scraping
+Instrumentator().instrument(app).expose(app, include_in_schema=False)
 
 
 _pool: SimpleConnectionPool | None = None
