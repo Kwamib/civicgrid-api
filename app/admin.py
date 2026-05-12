@@ -9,6 +9,7 @@ Endpoints:
   GET    /admin/keys           List all keys (prefix only — full keys are never recoverable)
   DELETE /admin/keys/{prefix}  Revoke a key by prefix
 """
+
 from __future__ import annotations
 
 import os
@@ -25,12 +26,14 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 # Admin auth (separate from API key auth)
 # ---------------------------------------------------------------------------
 
+
 def require_admin(authorization: str | None = Header(None)) -> None:
     """Verifies the request carries the admin token. Raises 401/403 on failure."""
     admin_token = os.environ.get("ADMIN_TOKEN")
     if not admin_token:
-        raise HTTPException(status_code=503,
-                            detail="Admin endpoints disabled: ADMIN_TOKEN not configured.")
+        raise HTTPException(
+            status_code=503, detail="Admin endpoints disabled: ADMIN_TOKEN not configured."
+        )
 
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Admin authorization required.")
@@ -38,6 +41,7 @@ def require_admin(authorization: str | None = Header(None)) -> None:
     presented = authorization[7:].strip()
     # Constant-time comparison.
     import hmac
+
     if not hmac.compare_digest(presented, admin_token):
         raise HTTPException(status_code=403, detail="Invalid admin token.")
 
@@ -46,6 +50,7 @@ def require_admin(authorization: str | None = Header(None)) -> None:
 # Schemas
 # ---------------------------------------------------------------------------
 
+
 class CreateKeyRequest(BaseModel):
     user_email: EmailStr
     tier: str = Field(default="free", pattern="^(free|starter|pro)$")
@@ -53,14 +58,13 @@ class CreateKeyRequest(BaseModel):
 
 
 class CreateKeyResponse(BaseModel):
-    key: str                  # Full key, shown ONCE
+    key: str  # Full key, shown ONCE
     key_prefix: str
     user_email: str
     tier: str
     label: str | None
     notice: str = (
-        "Store this key now. It will not be shown again. "
-        "If lost, revoke it and create a new one."
+        "Store this key now. It will not be shown again. If lost, revoke it and create a new one."
     )
 
 
@@ -79,6 +83,7 @@ class KeyInfo(BaseModel):
 # ---------------------------------------------------------------------------
 # Routes (bound to a get_cursor dependency in main.py)
 # ---------------------------------------------------------------------------
+
 
 def attach_admin_routes(app, get_cursor):
     """Register admin routes on the FastAPI app. Called from main.py."""
@@ -137,7 +142,5 @@ def attach_admin_routes(app, get_cursor):
             )
             row = cur.fetchone()
             if not row:
-                raise HTTPException(status_code=404,
-                                    detail="Key not found or already revoked.")
-        return {"revoked": True, "key_prefix": row["key_prefix"],
-                "user_email": row["user_email"]}
+                raise HTTPException(status_code=404, detail="Key not found or already revoked.")
+        return {"revoked": True, "key_prefix": row["key_prefix"], "user_email": row["user_email"]}

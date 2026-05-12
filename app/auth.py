@@ -13,6 +13,7 @@ Auth flow on each request:
 
 Public routes bypass auth via the PUBLIC_PATHS set.
 """
+
 from __future__ import annotations
 
 import secrets
@@ -37,7 +38,7 @@ ADMIN_PATH_PREFIX = "/admin"
 
 KEY_PREFIX = "cg_live_"
 KEY_RANDOM_LENGTH = 32  # url-safe chars after the prefix
-PREFIX_LENGTH = 16      # first N chars stored for lookup (cg_live_ + 8 chars)
+PREFIX_LENGTH = 16  # first N chars stored for lookup (cg_live_ + 8 chars)
 
 
 @dataclass
@@ -53,6 +54,7 @@ class AuthContext:
 # ---------------------------------------------------------------------------
 # Key generation & verification
 # ---------------------------------------------------------------------------
+
 
 def generate_key() -> tuple[str, str, str]:
     """Generate a new API key.
@@ -90,6 +92,7 @@ def extract_prefix(full_key: str) -> str | None:
 # ---------------------------------------------------------------------------
 # DB lookups (uses the same connection pool as the rest of the app)
 # ---------------------------------------------------------------------------
+
 
 def lookup_key_by_prefix(get_cursor, prefix: str) -> dict | None:
     """Find an active (non-revoked) API key by its prefix.
@@ -135,6 +138,7 @@ def touch_key(get_cursor, key_id: int) -> None:
 # Middleware
 # ---------------------------------------------------------------------------
 
+
 class AuthMiddleware(BaseHTTPMiddleware):
     """Verifies API key on protected routes.
 
@@ -156,14 +160,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # Extract bearer token.
         auth_header = request.headers.get("authorization", "")
         if not auth_header.lower().startswith("bearer "):
-            return _auth_error(401, "missing_api_key",
-                               "Authorization header required. Use: Authorization: Bearer cg_live_...")
+            return _auth_error(
+                401,
+                "missing_api_key",
+                "Authorization header required. Use: Authorization: Bearer cg_live_...",
+            )
 
         full_key = auth_header[7:].strip()
         prefix = extract_prefix(full_key)
         if not prefix:
-            return _auth_error(401, "invalid_key_format",
-                               "Malformed API key. Keys start with 'cg_live_'.")
+            return _auth_error(
+                401, "invalid_key_format", "Malformed API key. Keys start with 'cg_live_'."
+            )
 
         # Look up by prefix.
         row = lookup_key_by_prefix(self.get_cursor, prefix)
@@ -191,6 +199,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 def _auth_error(status: int, code: str, message: str) -> Response:
     """JSON error response for auth failures."""
     import json
+
     body = json.dumps({"error": code, "message": message})
     return Response(
         content=body,

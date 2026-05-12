@@ -99,7 +99,7 @@ def root():
             "/stats",
         ],
         "authentication": "API key required for /cities, /leaders, /stats. "
-                          "Pass as: Authorization: Bearer cg_live_...",
+        "Pass as: Authorization: Bearer cg_live_...",
         "docs": "/docs",
     }
 

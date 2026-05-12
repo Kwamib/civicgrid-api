@@ -16,6 +16,7 @@ Returns 429 Too Many Requests with standard headers:
   X-RateLimit-Remaining-Minute
   Retry-After
 """
+
 from __future__ import annotations
 
 import os
@@ -32,9 +33,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 # ---------------------------------------------------------------------------
 
 TIERS: dict[str, dict[str, int]] = {
-    "free":    {"per_day": 100,     "per_minute": 10},
-    "starter": {"per_day": 10_000,  "per_minute": 100},
-    "pro":     {"per_day": 100_000, "per_minute": 500},
+    "free": {"per_day": 100, "per_minute": 10},
+    "starter": {"per_day": 10_000, "per_minute": 100},
+    "pro": {"per_day": 100_000, "per_minute": 500},
 }
 
 DEFAULT_TIER = "free"
@@ -54,6 +55,7 @@ class LimitCheck:
 # ---------------------------------------------------------------------------
 # Backends
 # ---------------------------------------------------------------------------
+
 
 class InMemoryBackend:
     """Thread-safe in-memory sliding window. Single-process only.
@@ -92,9 +94,13 @@ class InMemoryBackend:
                 oldest = bucket[0] if bucket else now
                 retry = max(int(oldest + 86400 - now), 1)
                 return LimitCheck(
-                    allowed=False, day_limit=day_limit, day_used=day_used,
-                    day_reset_seconds=retry, minute_limit=minute_limit,
-                    minute_used=minute_used, retry_after_seconds=retry,
+                    allowed=False,
+                    day_limit=day_limit,
+                    day_used=day_used,
+                    day_reset_seconds=retry,
+                    minute_limit=minute_limit,
+                    minute_used=minute_used,
+                    retry_after_seconds=retry,
                 )
 
             # Minute limit check.
@@ -102,17 +108,25 @@ class InMemoryBackend:
                 oldest_in_minute = next((ts for ts in bucket if ts >= minute_window), now)
                 retry = max(int(oldest_in_minute + 60 - now), 1)
                 return LimitCheck(
-                    allowed=False, day_limit=day_limit, day_used=day_used,
-                    day_reset_seconds=86400, minute_limit=minute_limit,
-                    minute_used=minute_used, retry_after_seconds=retry,
+                    allowed=False,
+                    day_limit=day_limit,
+                    day_used=day_used,
+                    day_reset_seconds=86400,
+                    minute_limit=minute_limit,
+                    minute_used=minute_used,
+                    retry_after_seconds=retry,
                 )
 
             # Allowed. Record this request.
             bucket.append(now)
             return LimitCheck(
-                allowed=True, day_limit=day_limit, day_used=day_used + 1,
-                day_reset_seconds=86400, minute_limit=minute_limit,
-                minute_used=minute_used + 1, retry_after_seconds=0,
+                allowed=True,
+                day_limit=day_limit,
+                day_used=day_used + 1,
+                day_reset_seconds=86400,
+                minute_limit=minute_limit,
+                minute_used=minute_used + 1,
+                retry_after_seconds=0,
             )
 
 
@@ -125,6 +139,7 @@ class RedisBackend:
 
     def __init__(self, redis_url: str):
         import redis  # imported lazily so dev mode doesn't require it
+
         self._r = redis.from_url(redis_url, decode_responses=True)
 
     def check_and_increment(self, key: str, tier: str) -> LimitCheck:
@@ -138,9 +153,9 @@ class RedisBackend:
 
         zkey = f"rl:{key}"
         pipe = self._r.pipeline()
-        pipe.zremrangebyscore(zkey, 0, day_window)         # prune
-        pipe.zcard(zkey)                                    # day count
-        pipe.zcount(zkey, minute_window, "+inf")            # minute count
+        pipe.zremrangebyscore(zkey, 0, day_window)  # prune
+        pipe.zcard(zkey)  # day count
+        pipe.zcount(zkey, minute_window, "+inf")  # minute count
         _, day_used, minute_used = pipe.execute()
 
         if day_used >= day_limit:
@@ -148,32 +163,45 @@ class RedisBackend:
             oldest_ts = oldest[0][1] if oldest else now
             retry = max(int(oldest_ts + 86400 - now), 1)
             return LimitCheck(
-                allowed=False, day_limit=day_limit, day_used=day_used,
-                day_reset_seconds=retry, minute_limit=minute_limit,
-                minute_used=minute_used, retry_after_seconds=retry,
+                allowed=False,
+                day_limit=day_limit,
+                day_used=day_used,
+                day_reset_seconds=retry,
+                minute_limit=minute_limit,
+                minute_used=minute_used,
+                retry_after_seconds=retry,
             )
 
         if minute_used >= minute_limit:
-            oldest = self._r.zrangebyscore(zkey, minute_window, "+inf",
-                                            start=0, num=1, withscores=True)
+            oldest = self._r.zrangebyscore(
+                zkey, minute_window, "+inf", start=0, num=1, withscores=True
+            )
             oldest_ts = oldest[0][1] if oldest else now
             retry = max(int(oldest_ts + 60 - now), 1)
             return LimitCheck(
-                allowed=False, day_limit=day_limit, day_used=day_used,
-                day_reset_seconds=86400, minute_limit=minute_limit,
-                minute_used=minute_used, retry_after_seconds=retry,
+                allowed=False,
+                day_limit=day_limit,
+                day_used=day_used,
+                day_reset_seconds=86400,
+                minute_limit=minute_limit,
+                minute_used=minute_used,
+                retry_after_seconds=retry,
             )
 
         # Record the request.
         pipe = self._r.pipeline()
         pipe.zadd(zkey, {str(now): now})
-        pipe.expire(zkey, 86400 + 60)   # cleanup if key goes idle
+        pipe.expire(zkey, 86400 + 60)  # cleanup if key goes idle
         pipe.execute()
 
         return LimitCheck(
-            allowed=True, day_limit=day_limit, day_used=day_used + 1,
-            day_reset_seconds=86400, minute_limit=minute_limit,
-            minute_used=minute_used + 1, retry_after_seconds=0,
+            allowed=True,
+            day_limit=day_limit,
+            day_used=day_used + 1,
+            day_reset_seconds=86400,
+            minute_limit=minute_limit,
+            minute_used=minute_used + 1,
+            retry_after_seconds=0,
         )
 
 
@@ -191,6 +219,7 @@ def get_backend():
 # ---------------------------------------------------------------------------
 # Middleware
 # ---------------------------------------------------------------------------
+
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """Enforces tier-based rate limits on authenticated requests.
@@ -212,18 +241,24 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         if not check.allowed:
             import json
-            body = json.dumps({
-                "error": "rate_limit_exceeded",
-                "message": (
-                    f"Rate limit exceeded for tier '{auth.tier}'. "
-                    f"Retry after {check.retry_after_seconds} seconds."
-                ),
-                "tier": auth.tier,
-                "retry_after_seconds": check.retry_after_seconds,
-            })
+
+            body = json.dumps(
+                {
+                    "error": "rate_limit_exceeded",
+                    "message": (
+                        f"Rate limit exceeded for tier '{auth.tier}'. "
+                        f"Retry after {check.retry_after_seconds} seconds."
+                    ),
+                    "tier": auth.tier,
+                    "retry_after_seconds": check.retry_after_seconds,
+                }
+            )
             return Response(
-                content=body, status_code=429, media_type="application/json",
-                headers=_rate_limit_headers(check) | {
+                content=body,
+                status_code=429,
+                media_type="application/json",
+                headers=_rate_limit_headers(check)
+                | {
                     "Retry-After": str(check.retry_after_seconds),
                 },
             )
