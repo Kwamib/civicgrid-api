@@ -8,20 +8,29 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 
+from app.admin import attach_admin_routes
+from app.auth import AuthMiddleware
+from app.rate_limit import RateLimitMiddleware
+
 app = FastAPI(
     title="CivicGrid API",
-    description="US mayors and city managers. 3,063+ records.",
-    version="0.1.0",
+    description=(
+        "US mayors and city managers. 3,063+ records.\n\n"
+        "Most endpoints require authentication. Pass your API key via:\n"
+        "`Authorization: Bearer cg_live_...`\n\n"
+        "Public endpoints: `/`, `/health`, `/docs`."
+    ),
+    version="0.2.0",
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "DELETE"],
     allow_headers=["*"],
 )
 
-# Prometheus instrumentation: exposes /metrics for scraping
+# Prometheus instrumentation: exposes /metrics for scraping.
 Instrumentator().instrument(app).expose(app, include_in_schema=False)
 
 
@@ -68,12 +77,30 @@ def get_cursor():
         _pool.putconn(conn)
 
 
+# Middleware: AuthMiddleware runs FIRST (outermost), then RateLimitMiddleware.
+# Starlette runs middleware in reverse-add order, so add rate_limit first.
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(AuthMiddleware, get_cursor=get_cursor)
+
+# Admin routes attached after middleware so they get the cursor closure.
+attach_admin_routes(app, get_cursor)
+
+
 @app.get("/")
 def root():
     return {
         "service": "civicgrid-api",
-        "version": "0.1.0",
-        "endpoints": ["/health", "/cities", "/cities/{id}", "/leaders/current", "/stats"],
+        "version": "0.2.0",
+        "endpoints": [
+            "/health",
+            "/cities",
+            "/cities/{id}",
+            "/leaders/current",
+            "/stats",
+        ],
+        "authentication": "API key required for /cities, /leaders, /stats. "
+                          "Pass as: Authorization: Bearer cg_live_...",
+        "docs": "/docs",
     }
 
 
