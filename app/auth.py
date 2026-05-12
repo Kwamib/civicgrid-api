@@ -16,11 +16,10 @@ Public routes bypass auth via the PUBLIC_PATHS set.
 from __future__ import annotations
 
 import secrets
-import time
 from dataclasses import dataclass
 
 import bcrypt
-from fastapi import HTTPException, Request, Response
+from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 # Routes that do not require authentication.

@@ -4,10 +4,6 @@ Run with: pytest tests/
 """
 from __future__ import annotations
 
-import time
-
-import pytest
-
 from app.auth import (
     KEY_PREFIX,
     PREFIX_LENGTH,
@@ -16,7 +12,6 @@ from app.auth import (
     verify_key,
 )
 from app.rate_limit import TIERS, InMemoryBackend
-
 
 # ---------------------------------------------------------------------------
 # Key generation
