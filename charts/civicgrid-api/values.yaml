@@ -75,6 +75,21 @@ database:
   existingSecret: ""
   existingSecretKey: "DATABASE_URL"
 
+# Redis is used as the rate-limit counter store. Falls back to in-memory
+# (per-pod, not shared) if url is empty — useful for local dev.
+# In-cluster default points at the Bitnami Redis chart installed via
+# the gitops repo at infra/redis/.
+redis:
+  url: "redis://redis-master.redis.svc.cluster.local:6379/0"
+
+# Admin token guards POST/GET/DELETE /admin/keys endpoints. Required for
+# creating, listing, or revoking API keys. Must be set via existingSecret
+# in production — the in-chart fallback (admin.token) is for local dev only.
+admin:
+  token: ""
+  existingSecret: ""
+  existingSecretKey: "ADMIN_TOKEN"
+
 affinity:
   podAntiAffinity:
     preferredDuringSchedulingIgnoredDuringExecution:

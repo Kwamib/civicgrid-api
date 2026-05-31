@@ -43,6 +43,15 @@ spec:
                 secretKeyRef:
                   name: {{ include "civicgrid-api.databaseSecretName" . }}
                   key: {{ .Values.database.existingSecretKey }}
+            {{- if .Values.redis.url }}
+            - name: REDIS_URL
+              value: {{ .Values.redis.url | quote }}
+            {{- end }}
+            - name: ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "civicgrid-api.adminSecretName" . }}
+                  key: {{ .Values.admin.existingSecretKey }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
