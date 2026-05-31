@@ -69,3 +69,14 @@ Database secret name.
 {{- printf "%s-database" (include "civicgrid-api.fullname" .) }}
 {{- end }}
 {{- end }}
+
+{{/*
+Admin secret name. Used by /admin/keys endpoints.
+*/}}
+{{- define "civicgrid-api.adminSecretName" -}}
+{{- if .Values.admin.existingSecret }}
+{{- .Values.admin.existingSecret }}
+{{- else }}
+{{- printf "%s-admin" (include "civicgrid-api.fullname" .) }}
+{{- end }}
+{{- end }}
