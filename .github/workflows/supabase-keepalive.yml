@@ -1,0 +1,28 @@
+name: Supabase Keepalive
+
+on:
+  schedule:
+    - cron: '0 12 */3 * *'
+  workflow_dispatch:
+
+jobs:
+  ping-supabase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping Supabase to prevent auto-pause
+        run: |
+          # Hit the auth health endpoint
+          # Any 2xx OR 401 means project is alive and reachable
+          http_code=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${{ secrets.SUPABASE_URL }}/auth/v1/health")
+          
+          echo "HTTP Status: $http_code"
+          
+          # 200 = healthy, 401 = reached but unauthenticated (both prove alive)
+          # 5xx or no response = project is paused or down
+          if [ "$http_code" -eq 200 ] || [ "$http_code" -eq 401 ]; then
+            echo "✅ Supabase reachable (status $http_code) — project stays active"
+          else
+            echo "::error::Supabase ping failed with status $http_code"
+            exit 1
+          fi
