@@ -59,11 +59,11 @@ def verify_supabase_jwt(token: str) -> JWTUser:
             audience="authenticated",  # Supabase JWT audience claim
         )
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired. Please sign in again.")
+        raise HTTPException(status_code=401, detail="Token expired. Please sign in again.") from None
     except jwt.InvalidAudienceError:
-        raise HTTPException(status_code=401, detail="Invalid token audience.")
+        raise HTTPException(status_code=401, detail="Invalid token audience.") from None
     except jwt.InvalidTokenError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+        raise HTTPException(status_code=401, detail=f"Invalid token: {e}") from e
 
     user_id = payload.get("sub")
     email = payload.get("email")

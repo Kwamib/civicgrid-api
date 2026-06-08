@@ -9,8 +9,8 @@ from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 
 from app.admin import attach_admin_routes
-from app.me import attach_me_routes
 from app.auth import AuthMiddleware
+from app.me import attach_me_routes
 from app.rate_limit import RateLimitMiddleware
 
 app = FastAPI(
