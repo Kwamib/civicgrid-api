@@ -90,6 +90,14 @@ admin:
   existingSecret: ""
   existingSecretKey: "ADMIN_TOKEN"
 
+# Supabase JWT secret for validating user authentication tokens in /me endpoints.
+# Set via existingSecret in production. The in-chart fallback (jwt.secret) is for
+# local dev only. Stored alongside ADMIN_TOKEN in the civicgrid-admin K8s secret.
+jwt:
+  secret: ""
+  existingSecret: ""
+  existingSecretKey: "SUPABASE_JWT_SECRET"
+
 affinity:
   podAntiAffinity:
     preferredDuringSchedulingIgnoredDuringExecution:

@@ -35,6 +35,7 @@ PUBLIC_PATHS: set[str] = {
 
 # Routes that require admin auth (separate from API key auth).
 ADMIN_PATH_PREFIX = "/admin"
+ME_PATH_PREFIX = "/me"
 
 KEY_PREFIX = "cg_live_"
 KEY_RANDOM_LENGTH = 32  # url-safe chars after the prefix
@@ -154,7 +155,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
 
         # Bypass for public routes and admin routes (admin has its own auth).
-        if path in PUBLIC_PATHS or path.startswith(ADMIN_PATH_PREFIX):
+        if path in PUBLIC_PATHS or path.startswith(ADMIN_PATH_PREFIX) or path.startswith(ME_PATH_PREFIX):
             return await call_next(request)
 
         # Extract bearer token.

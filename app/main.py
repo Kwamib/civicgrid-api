@@ -9,6 +9,7 @@ from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 
 from app.admin import attach_admin_routes
+from app.me import attach_me_routes
 from app.auth import AuthMiddleware
 from app.rate_limit import RateLimitMiddleware
 
@@ -84,6 +85,7 @@ app.add_middleware(AuthMiddleware, get_cursor=get_cursor)
 
 # Admin routes attached after middleware so they get the cursor closure.
 attach_admin_routes(app, get_cursor)
+attach_me_routes(app, get_cursor)
 
 
 @app.get("/")
