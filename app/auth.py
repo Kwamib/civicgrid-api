@@ -155,7 +155,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
 
         # Bypass for public routes and admin routes (admin has its own auth).
-        if path in PUBLIC_PATHS or path.startswith(ADMIN_PATH_PREFIX) or path.startswith(ME_PATH_PREFIX):
+        if (
+            path in PUBLIC_PATHS
+            or path.startswith(ADMIN_PATH_PREFIX)
+            or path.startswith(ME_PATH_PREFIX)
+        ):
             return await call_next(request)
 
         # Extract bearer token.

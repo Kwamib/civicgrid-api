@@ -35,6 +35,7 @@ router = APIRouter(prefix="/me", tags=["me"])
 @dataclass
 class JWTUser:
     """User identity extracted from a verified Supabase JWT."""
+
     user_id: str  # Supabase auth.users.id (UUID)
     email: str
 
@@ -59,7 +60,9 @@ def verify_supabase_jwt(token: str) -> JWTUser:
             audience="authenticated",  # Supabase JWT audience claim
         )
     except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired. Please sign in again.") from None
+        raise HTTPException(
+            status_code=401, detail="Token expired. Please sign in again."
+        ) from None
     except jwt.InvalidAudienceError:
         raise HTTPException(status_code=401, detail="Invalid token audience.") from None
     except jwt.InvalidTokenError as e:
@@ -115,8 +118,7 @@ class CreateKeyResponse(BaseModel):
     tier: str
     label: str | None
     notice: str = (
-        "Store this key now. It will not be shown again. "
-        "If lost, revoke it and create a new one."
+        "Store this key now. It will not be shown again. If lost, revoke it and create a new one."
     )
 
 
