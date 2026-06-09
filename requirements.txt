@@ -5,4 +5,4 @@ psycopg2-binary>=2.9
 prometheus-fastapi-instrumentator>=7.0
 bcrypt>=4.2
 redis>=5.2
-PyJWT>=2.9
+PyJWT[crypto]>=2.10
