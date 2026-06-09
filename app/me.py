@@ -20,6 +20,7 @@ from dataclasses import dataclass
 
 import jwt
 from fastapi import APIRouter, Header, HTTPException
+from jwt import PyJWKClient
 from pydantic import BaseModel, Field
 
 from app.auth import generate_key
@@ -40,24 +41,45 @@ class JWTUser:
     email: str
 
 
+# Lazily-initialized JWKS client. Supabase rotates signing keys, so we let
+# PyJWKClient handle caching + refresh automatically.
+_jwks_client: PyJWKClient | None = None
+
+
+def _get_jwks_client() -> PyJWKClient:
+    """Return a cached PyJWKClient pointing at Supabase's JWKS endpoint."""
+    global _jwks_client
+    if _jwks_client is None:
+        supabase_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+        if not supabase_url:
+            raise HTTPException(
+                status_code=503,
+                detail="JWT auth not configured: SUPABASE_URL missing.",
+            )
+        jwks_url = f"{supabase_url}/auth/v1/.well-known/jwks.json"
+        _jwks_client = PyJWKClient(jwks_url, cache_keys=True, lifespan=3600)
+    return _jwks_client
+
+
 def verify_supabase_jwt(token: str) -> JWTUser:
     """Verify Supabase JWT signature and extract user identity.
 
+    Supabase issues JWTs signed with asymmetric keys (ES256). We fetch the
+    public keys from their JWKS endpoint and verify against the key whose
+    kid matches the token header. Also supports HS256 as a fallback for the
+    legacy shared-secret path.
+
     Raises HTTPException(401) on any verification failure.
     """
-    secret = os.environ.get("SUPABASE_JWT_SECRET")
-    if not secret:
-        raise HTTPException(
-            status_code=503,
-            detail="JWT auth not configured: SUPABASE_JWT_SECRET missing.",
-        )
-
+    # Try modern JWKS-based verification first (asymmetric ES256/RS256).
     try:
+        jwks_client = _get_jwks_client()
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
         payload = jwt.decode(
             token,
-            secret,
-            algorithms=["HS256"],
-            audience="authenticated",  # Supabase JWT audience claim
+            signing_key.key,
+            algorithms=["ES256", "RS256"],
+            audience="authenticated",
         )
     except jwt.ExpiredSignatureError:
         raise HTTPException(
@@ -65,6 +87,21 @@ def verify_supabase_jwt(token: str) -> JWTUser:
         ) from None
     except jwt.InvalidAudienceError:
         raise HTTPException(status_code=401, detail="Invalid token audience.") from None
+    except jwt.PyJWKClientError as e:
+        # JWKS fetch failed — likely network issue or token has no kid.
+        # Fall back to HS256 legacy secret if available.
+        secret = os.environ.get("SUPABASE_JWT_SECRET")
+        if not secret:
+            raise HTTPException(status_code=401, detail=f"Could not verify token: {e}") from e
+        try:
+            payload = jwt.decode(
+                token,
+                secret,
+                algorithms=["HS256"],
+                audience="authenticated",
+            )
+        except jwt.InvalidTokenError as e2:
+            raise HTTPException(status_code=401, detail=f"Invalid token: {e2}") from e2
     except jwt.InvalidTokenError as e:
         raise HTTPException(status_code=401, detail=f"Invalid token: {e}") from e
 

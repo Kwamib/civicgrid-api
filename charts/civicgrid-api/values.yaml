@@ -98,6 +98,11 @@ jwt:
   existingSecret: ""
   existingSecretKey: "SUPABASE_JWT_SECRET"
 
+# Supabase URL for JWKS endpoint discovery (used by /me JWT validation).
+# Stored in the civicgrid-admin K8s secret as SUPABASE_URL.
+supabase:
+  urlSecretKey: "SUPABASE_URL"
+
 affinity:
   podAntiAffinity:
     preferredDuringSchedulingIgnoredDuringExecution:

@@ -57,6 +57,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "civicgrid-api.adminSecretName" . }}
                   key: {{ .Values.jwt.existingSecretKey }}
+            - name: SUPABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "civicgrid-api.adminSecretName" . }}
+                  key: {{ .Values.supabase.urlSecretKey }}
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
           readinessProbe:
