@@ -2,9 +2,8 @@ import os
 from contextlib import contextmanager
 from urllib.parse import unquote, urlparse
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
@@ -182,7 +181,7 @@ def list_cities(
 
 
 @app.get("/cities/all")
-def all_cities():
+def all_cities(response: Response):
     """Bulk fetch endpoint - returns every city with current leader in one query.
 
     Designed for clients that need the full dataset (e.g. the landing page's
@@ -213,11 +212,10 @@ def all_cities():
         cur.execute(sql)
         rows = cur.fetchall()
 
-    response = JSONResponse({"data": rows, "count": len(rows)})
     response.headers["Cache-Control"] = (
         "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400"
     )
-    return response
+    return {"data": rows, "count": len(rows)}
 
 
 @app.get("/cities/{city_id}")
