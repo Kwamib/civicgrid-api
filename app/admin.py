@@ -1,13 +1,14 @@
-"""Admin endpoints for API key management.
+"""Admin endpoints for API key management and leader rotation.
 
 All endpoints require Authorization: Bearer <ADMIN_TOKEN> where ADMIN_TOKEN is
 set as an env var. This is a deliberately simple admin auth — full user
 accounts come in Step 14 with the frontend.
 
 Endpoints:
-  POST   /admin/keys           Create a new API key for a user
-  GET    /admin/keys           List all keys (prefix only — full keys are never recoverable)
-  DELETE /admin/keys/{prefix}  Revoke a key by prefix
+  POST   /admin/keys                       Create a new API key for a user
+  GET    /admin/keys                       List all keys (prefix only — full keys never recoverable)
+  DELETE /admin/keys/{prefix}              Revoke a key by prefix
+  POST   /admin/cities/{city_id}/leaders   Rotate a city's current leader (demote + insert, atomic)
 """
 
 from __future__ import annotations
@@ -80,6 +81,20 @@ class KeyInfo(BaseModel):
     request_count: int
 
 
+class RotateLeaderRequest(BaseModel):
+    """New current leader for a city. Existing current leader is demoted, not deleted."""
+
+    full_name: str = Field(min_length=1, max_length=200)
+    # Optional: derived from the last whitespace-separated token of full_name if omitted.
+    last_name: str | None = Field(default=None, max_length=100)
+    leader_title: str | None = Field(default=None, max_length=100)
+    political_party: str | None = Field(default=None, max_length=100)
+    year_elected: int | None = Field(default=None, ge=1700, le=2100)
+    next_election_year: int | None = Field(default=None, ge=1700, le=2100)
+    tenure_years: int | None = Field(default=None, ge=0, le=100)
+    term_length_years: int | None = Field(default=None, ge=1, le=20)
+
+
 # ---------------------------------------------------------------------------
 # Routes (bound to a get_cursor dependency in main.py)
 # ---------------------------------------------------------------------------
@@ -144,3 +159,85 @@ def attach_admin_routes(app, get_cursor):
             if not row:
                 raise HTTPException(status_code=404, detail="Key not found or already revoked.")
         return {"revoked": True, "key_prefix": row["key_prefix"], "user_email": row["user_email"]}
+
+    @app.post("/admin/cities/{city_id}/leaders", status_code=201, tags=["admin"])
+    def rotate_leader(
+        city_id: int,
+        req: RotateLeaderRequest,
+        authorization: str | None = Header(None),
+    ):
+        """Set a new current leader for a city.
+
+        Demotes whoever is currently marked is_current=true (history preserved,
+        rows are never deleted) and inserts the new leader as current. The whole
+        operation runs in ONE transaction via get_cursor(), which commits on a
+        clean exit and rolls back on any exception. So the demotion and the
+        insert either both land or neither does — there is no window where the
+        city has zero current leaders.
+        """
+        require_admin(authorization)
+
+        full_name = req.full_name.strip()
+        if not full_name:
+            raise HTTPException(status_code=422, detail="full_name cannot be blank.")
+        # Derive last_name from the final token if the caller didn't supply one.
+        last_name = (req.last_name or full_name.split()[-1]).strip()
+
+        with get_cursor() as cur:
+            # 1. Confirm the city exists; also grab display fields for the response.
+            cur.execute(
+                "select id, city, state_code from cities where id = %s",
+                (city_id,),
+            )
+            city = cur.fetchone()
+            if not city:
+                raise HTTPException(status_code=404, detail=f"City {city_id} not found.")
+
+            # 2. Demote the current incumbent(s). Zero rows is fine (no incumbent
+            #    yet); more than one row self-heals a data anomaly.
+            cur.execute(
+                """
+                update leaders
+                set is_current = false, updated_at = now()
+                where city_id = %s and is_current = true
+                returning id, full_name
+                """,
+                (city_id,),
+            )
+            demoted = cur.fetchall()
+
+            # 3. Insert the new current leader.
+            cur.execute(
+                """
+                insert into leaders (
+                    city_id, full_name, last_name, leader_title, political_party,
+                    year_elected, next_election_year, tenure_years, term_length_years,
+                    is_current, created_at, updated_at
+                )
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, true, now(), now())
+                returning
+                    id, city_id, full_name, last_name, leader_title, political_party,
+                    year_elected, next_election_year, tenure_years, term_length_years,
+                    is_current, created_at, updated_at
+                """,
+                (
+                    city_id,
+                    full_name,
+                    last_name,
+                    req.leader_title,
+                    req.political_party,
+                    req.year_elected,
+                    req.next_election_year,
+                    req.tenure_years,
+                    req.term_length_years,
+                ),
+            )
+            new_leader = cur.fetchone()
+
+        return {
+            "city_id": city["id"],
+            "city": city["city"],
+            "state_code": city["state_code"],
+            "previous_current": demoted,
+            "new_current": new_leader,
+        }
