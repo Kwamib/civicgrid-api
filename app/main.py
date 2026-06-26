@@ -4,6 +4,7 @@ from urllib.parse import unquote, urlparse
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
@@ -178,6 +179,45 @@ def list_cities(
         "data": rows,
         "pagination": {"total": total, "limit": limit, "offset": offset},
     }
+
+
+@app.get("/cities/all")
+def all_cities():
+    """Bulk fetch endpoint - returns every city with current leader in one query.
+
+    Designed for clients that need the full dataset (e.g. the landing page's
+    client-side search). Replaces 30+ paginated calls with a single round trip.
+
+    Response is intentionally NOT paginated and NOT filtered - clients filter
+    locally. Total payload is ~500KB JSON for 3,063 cities.
+
+    Cache hint: response is safe to cache at edge for 1 hour. Underlying data
+    changes infrequently (mayors change a few times per year at most).
+    """
+    sql = """
+        select
+            c.id, c.city, c.state_code, c.state_name, c.county, c.metro_area,
+            c.city_type, c.population, c.median_household_income, c.median_age,
+            c.land_area_sq_mi, c.population_density,
+            c.city_budget_text, c.city_budget_numeric, c.city_hall_phone, c.url,
+            l.full_name        as leader_name,
+            l.leader_title     as leader_title,
+            l.political_party  as leader_party,
+            l.year_elected     as leader_year_elected,
+            l.next_election_year as leader_next_election
+        from cities c
+        left join leaders l on l.city_id = c.id and l.is_current = true
+        order by c.population desc nulls last, c.city asc
+    """
+    with get_cursor() as cur:
+        cur.execute(sql)
+        rows = cur.fetchall()
+
+    response = JSONResponse({"data": rows, "count": len(rows)})
+    response.headers["Cache-Control"] = (
+        "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400"
+    )
+    return response
 
 
 @app.get("/cities/{city_id}")
