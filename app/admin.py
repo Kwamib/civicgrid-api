@@ -1,14 +1,15 @@
-"""Admin endpoints for API key management and leader rotation.
+"""Admin endpoints for API key management and leader rotation/correction.
 
 All endpoints require Authorization: Bearer <ADMIN_TOKEN> where ADMIN_TOKEN is
 set as an env var. This is a deliberately simple admin auth — full user
 accounts come in Step 14 with the frontend.
 
 Endpoints:
-  POST   /admin/keys                       Create a new API key for a user
-  GET    /admin/keys                       List all keys (prefix only — full keys never recoverable)
-  DELETE /admin/keys/{prefix}              Revoke a key by prefix
-  POST   /admin/cities/{city_id}/leaders   Rotate a city's current leader (demote + insert, atomic)
+  POST   /admin/keys                                  Create a new API key for a user
+  GET    /admin/keys                                  List all keys (prefix only — never recoverable)
+  DELETE /admin/keys/{prefix}                         Revoke a key by prefix
+  POST   /admin/cities/{city_id}/leaders             Rotate a city's current leader (demote + insert, atomic)
+  PATCH  /admin/cities/{city_id}/leaders/{leader_id} Correct a leader's fields in place (partial update)
 """
 
 from __future__ import annotations
@@ -93,6 +94,44 @@ class RotateLeaderRequest(BaseModel):
     next_election_year: int | None = Field(default=None, ge=1700, le=2100)
     tenure_years: int | None = Field(default=None, ge=0, le=100)
     term_length_years: int | None = Field(default=None, ge=1, le=20)
+
+
+class PatchLeaderRequest(BaseModel):
+    """Partial update of a leader's attributes.
+
+    Only fields PRESENT in the request body are modified; omitted fields are
+    left untouched. Nullable fields (leader_title, political_party, election
+    years, tenure) may be explicitly set to null to clear them. is_current is
+    intentionally NOT patchable — use the rotation endpoint to change who is
+    current, so the single-current-leader invariant stays owned by one place.
+    """
+
+    full_name: str | None = Field(default=None, min_length=1, max_length=200)
+    last_name: str | None = Field(default=None, min_length=1, max_length=100)
+    leader_title: str | None = Field(default=None, max_length=100)
+    political_party: str | None = Field(default=None, max_length=100)
+    year_elected: int | None = Field(default=None, ge=1700, le=2100)
+    next_election_year: int | None = Field(default=None, ge=1700, le=2100)
+    tenure_years: int | None = Field(default=None, ge=0, le=100)
+    term_length_years: int | None = Field(default=None, ge=1, le=20)
+
+
+# Columns a PATCH is allowed to touch. is_current and identity/timestamp
+# columns are deliberately excluded. Used as a defense-in-depth whitelist when
+# building the dynamic SET clause (column names never come from raw user input).
+PATCHABLE_COLUMNS = {
+    "full_name",
+    "last_name",
+    "leader_title",
+    "political_party",
+    "year_elected",
+    "next_election_year",
+    "tenure_years",
+    "term_length_years",
+}
+
+# Columns that must never be set to NULL (NOT NULL in the schema).
+NON_NULLABLE_COLUMNS = {"full_name", "last_name"}
 
 
 # ---------------------------------------------------------------------------
@@ -241,3 +280,64 @@ def attach_admin_routes(app, get_cursor):
             "previous_current": demoted,
             "new_current": new_leader,
         }
+
+    @app.patch("/admin/cities/{city_id}/leaders/{leader_id}", tags=["admin"])
+    def patch_leader(
+        city_id: int,
+        leader_id: int,
+        req: PatchLeaderRequest,
+        authorization: str | None = Header(None),
+    ):
+        """Correct a leader's fields in place without rotating.
+
+        Partial update: only the fields present in the request body are written;
+        everything else is left untouched. Does NOT touch is_current and does
+        NOT create a history row — use the POST rotation endpoint to change who
+        is current. Scoped by both city_id and leader_id so a leader can only be
+        edited under the city it actually belongs to.
+        """
+        require_admin(authorization)
+
+        # exclude_unset => only the fields the caller actually sent. This is what
+        # makes it a partial update: an omitted field is absent here (untouched),
+        # while a field explicitly set to null is present here (cleared).
+        updates = req.model_dump(exclude_unset=True)
+        if not updates:
+            raise HTTPException(status_code=422, detail="No fields provided to update.")
+
+        # Reject explicit nulls on NOT NULL columns before hitting the DB.
+        for col in NON_NULLABLE_COLUMNS:
+            if col in updates and updates[col] is None:
+                raise HTTPException(status_code=422, detail=f"{col} cannot be set to null.")
+
+        # Build the SET clause from the whitelist only. Column names come from
+        # PATCHABLE_COLUMNS (never from raw user input); values are parameterized.
+        cols = [c for c in updates if c in PATCHABLE_COLUMNS]
+        if not cols:
+            raise HTTPException(status_code=422, detail="No updatable fields provided.")
+
+        set_clauses = [f"{c} = %s" for c in cols]
+        set_clauses.append("updated_at = now()")
+        values = [updates[c] for c in cols]
+        values.extend([leader_id, city_id])
+
+        sql = f"""
+            update leaders
+            set {", ".join(set_clauses)}
+            where id = %s and city_id = %s
+            returning
+                id, city_id, full_name, last_name, leader_title, political_party,
+                year_elected, next_election_year, tenure_years, term_length_years,
+                is_current, created_at, updated_at
+        """
+
+        with get_cursor() as cur:
+            cur.execute(sql, values)
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Leader {leader_id} not found for city {city_id}.",
+                )
+
+        return {"updated_fields": cols, "leader": row}
