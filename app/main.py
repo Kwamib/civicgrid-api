@@ -2,7 +2,6 @@ import os
 from contextlib import contextmanager
 from urllib.parse import unquote, urlparse
 
-from app.webhooks_admin import attach_webhook_admin_routes
 from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -15,6 +14,7 @@ from app.export import attach_export_routes
 from app.me import attach_me_routes
 from app.rate_limit import RateLimitMiddleware
 from app.states import attach_state_routes
+from app.webhooks_admin import attach_webhook_admin_routes
 
 app = FastAPI(
     title="CivicGrid API",
