@@ -1,17 +1,17 @@
-"""Admin endpoints for managing webhook subscriptions.
+"""Admin endpoints for managing webhook subscriptions and inspecting deliveries.
 
 All endpoints require the admin token (reuses require_admin from app.admin),
-mirroring the /admin/keys management surface. This is PR 2 of the webhook
-system (see docs/design/webhooks.md): subscription CRUD only. Event emission
-(PR 3) and delivery (PR 4) come later.
+mirroring the /admin/keys management surface.
 
 Endpoints:
-  POST   /admin/webhooks                    Create a subscription (returns signing secret ONCE)
-  GET    /admin/webhooks                    List subscriptions (never returns secrets)
-  GET    /admin/webhooks/{id}               Subscription detail (no secret)
-  PATCH  /admin/webhooks/{id}               Update target_url / events / is_active / label
-  DELETE /admin/webhooks/{id}               Delete a subscription (cascades deliveries)
-  POST   /admin/webhooks/{id}/rotate-secret Issue a new signing secret (returned ONCE)
+  POST   /admin/webhooks                              Create a subscription (returns signing secret ONCE)
+  GET    /admin/webhooks                              List subscriptions (never returns secrets)
+  GET    /admin/webhooks/{id}                         Subscription detail (no secret)
+  PATCH  /admin/webhooks/{id}                         Update target_url / events / is_active / label
+  DELETE /admin/webhooks/{id}                         Delete a subscription (cascades deliveries)
+  POST   /admin/webhooks/{id}/rotate-secret           Issue a new signing secret (returned ONCE)
+  GET    /admin/webhooks/deliveries                   Inspect deliveries (filter by status/subscription)
+  POST   /admin/webhooks/deliveries/{id}/redeliver    Re-queue a delivery (typically a dead one)
 """
 
 from __future__ import annotations
@@ -24,8 +24,11 @@ from pydantic import BaseModel, Field, field_validator
 from app.admin import require_admin
 
 # The event types a subscription may listen for. Kept in sync with the
-# producer (PR 3) and the design doc (§5).
+# producer (app/webhook_events.py) and the design doc (§5).
 KNOWN_EVENTS = {"leader.rotated", "leader.updated"}
+
+# Delivery lifecycle statuses, used to validate the inspection filter.
+KNOWN_DELIVERY_STATUSES = {"pending", "in_flight", "delivered", "dead"}
 
 SECRET_PREFIX = "whsec_"
 
@@ -145,6 +148,76 @@ def attach_webhook_admin_routes(app, get_cursor):
             rows = cur.fetchall()
         return {"data": rows, "count": len(rows)}
 
+    # NOTE: declared before /admin/webhooks/{sub_id} so the literal "deliveries"
+    # segment is matched first. (sub_id is typed int, so "deliveries" wouldn't
+    # bind to it anyway, but explicit ordering keeps intent clear.)
+    @app.get("/admin/webhooks/deliveries", tags=["admin"])
+    def list_deliveries(
+        authorization: str | None = Header(None),
+        status: str | None = None,
+        subscription_id: int | None = None,
+        limit: int = 100,
+    ):
+        """Inspect deliveries, optionally filtered by status and/or subscription.
+
+        Primary use is surfacing dead-letter rows: ?status=dead.
+        """
+        require_admin(authorization)
+        if status is not None and status not in KNOWN_DELIVERY_STATUSES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown status '{status}'. "
+                f"Valid: {', '.join(sorted(KNOWN_DELIVERY_STATUSES))}.",
+            )
+        limit = max(1, min(limit, 500))
+
+        clauses = []
+        params: list = []
+        if status is not None:
+            clauses.append("status = %s")
+            params.append(status)
+        if subscription_id is not None:
+            clauses.append("subscription_id = %s")
+            params.append(subscription_id)
+        where = ("where " + " and ".join(clauses)) if clauses else ""
+        params.append(limit)
+
+        with get_cursor() as cur:
+            cur.execute(
+                f"""
+                select id, event_id, subscription_id, status, attempts,
+                       next_attempt_at, last_status_code, last_error,
+                       last_attempt_at, delivered_at, created_at
+                from webhook_deliveries
+                {where}
+                order by id desc
+                limit %s
+                """,
+                params,
+            )
+            rows = cur.fetchall()
+        return {"data": rows, "count": len(rows)}
+
+    @app.post("/admin/webhooks/deliveries/{delivery_id}/redeliver", tags=["admin"])
+    def redeliver(delivery_id: int, authorization: str | None = Header(None)):
+        """Re-queue a delivery (typically a dead one) for the next drain run."""
+        require_admin(authorization)
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                update webhook_deliveries
+                   set status='pending', attempts=0, next_attempt_at=now(),
+                       last_error=null, last_status_code=null
+                 where id=%s
+                returning id, status, subscription_id, event_id
+                """,
+                (delivery_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail=f"Delivery {delivery_id} not found.")
+        return {"requeued": True, "delivery": row}
+
     @app.get("/admin/webhooks/{sub_id}", tags=["admin"])
     def get_subscription(sub_id: int, authorization: str | None = Header(None)):
         require_admin(authorization)
@@ -171,11 +244,9 @@ def attach_webhook_admin_routes(app, get_cursor):
         if not updates:
             raise HTTPException(status_code=422, detail="No fields provided to update.")
 
-        # Validate events if the caller is changing them.
         if "events" in updates:
             updates["events"] = _validate_events(updates["events"])
 
-        # Whitelisted columns only; names never come from raw input.
         allowed = {"target_url", "events", "is_active", "label"}
         cols = [c for c in updates if c in allowed]
         if not cols:

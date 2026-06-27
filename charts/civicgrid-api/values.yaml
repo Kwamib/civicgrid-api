@@ -125,3 +125,24 @@ serviceMonitor:
   interval: 30s
   scrapeTimeout: 10s
   additionalLabels: {}
+
+# Webhook delivery drain. Runs `python -m app.webhooks.drain` on a schedule as
+# a CronJob, using the SAME image as the API (the drain code ships in it) and
+# the same DATABASE_URL secret. Right-sized for low event volume; see
+# docs/design/webhooks.md. Disabled by default so the chart installs cleanly
+# anywhere; the gitops values.yaml enables it in the cluster.
+webhookDrain:
+  enabled: false
+  schedule: "* * * * *"          # every minute
+  activeDeadlineSeconds: 50      # a run must finish within the minute
+  startingDeadlineSeconds: 30    # skip a tick if it can't start in time
+  backoffLimit: 0                # don't retry a failed run; the next tick re-drains
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
