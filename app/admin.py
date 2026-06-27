@@ -10,6 +10,9 @@ Endpoints:
   DELETE /admin/keys/{prefix}                         Revoke a key by prefix
   POST   /admin/cities/{city_id}/leaders             Rotate a city's current leader (demote + insert, atomic)
   PATCH  /admin/cities/{city_id}/leaders/{leader_id} Correct a leader's fields in place (partial update)
+
+Leader rotation and correction emit webhook events (leader.rotated /
+leader.updated) into the outbox in the SAME transaction as the data change.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, EmailStr, Field
 
 from app.auth import generate_key
+from app.webhook_events import EVENT_LEADER_ROTATED, EVENT_LEADER_UPDATED, emit_event
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -273,6 +277,24 @@ def attach_admin_routes(app, get_cursor):
             )
             new_leader = cur.fetchone()
 
+            # Outbox write, in the SAME transaction as the rotation above.
+            # If anything here raises, get_cursor() rolls back the whole thing
+            # (demote + insert + event), so the event can't outlive a failed
+            # rotation, nor a rotation outlive a failed event.
+            emit_event(
+                cur,
+                EVENT_LEADER_ROTATED,
+                {
+                    "city": {
+                        "id": city["id"],
+                        "city": city["city"],
+                        "state_code": city["state_code"],
+                    },
+                    "new_current": new_leader,
+                    "previous_current": demoted,
+                },
+            )
+
         return {
             "city_id": city["id"],
             "city": city["city"],
@@ -339,5 +361,16 @@ def attach_admin_routes(app, get_cursor):
                     status_code=404,
                     detail=f"Leader {leader_id} not found for city {city_id}.",
                 )
+
+            # Outbox write, in the SAME transaction as the update above.
+            emit_event(
+                cur,
+                EVENT_LEADER_UPDATED,
+                {
+                    "city": {"id": row["city_id"]},
+                    "leader": row,
+                    "updated_fields": cols,
+                },
+            )
 
         return {"updated_fields": cols, "leader": row}
