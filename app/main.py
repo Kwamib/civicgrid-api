@@ -13,6 +13,7 @@ from app.auth import AuthMiddleware
 from app.export import attach_export_routes
 from app.me import attach_me_routes
 from app.rate_limit import RateLimitMiddleware
+from app.states import attach_state_routes
 
 app = FastAPI(
     title="CivicGrid API",
@@ -88,6 +89,7 @@ app.add_middleware(AuthMiddleware, get_cursor=get_cursor)
 attach_admin_routes(app, get_cursor)
 attach_me_routes(app, get_cursor)
 attach_export_routes(app, get_cursor)
+attach_state_routes(app, get_cursor)
 
 
 @app.get("/")
