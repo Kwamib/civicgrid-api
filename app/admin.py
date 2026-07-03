@@ -303,6 +303,45 @@ def attach_admin_routes(app, get_cursor):
             "new_current": new_leader,
         }
 
+    @app.get("/admin/cities/search", tags=["admin"])
+    def search_cities(
+        authorization: str | None = Header(None),
+        q: str = "",
+        only_unverified: bool = False,
+        limit: int = 25,
+    ):
+        """Search cities by name for the admin fix-a-city UI.
+
+        Returns each match with its current leader and verification status.
+        q matches city name (prefix or contained, case-insensitive). If
+        only_unverified is true, restricts to cities whose current leader has
+        no last_verified_at (the 'needs attention' set).
+        """
+        require_admin(authorization)
+        q = (q or "").strip()
+        limit = max(1, min(limit, 100))
+
+        where = ["c.city ilike %s"]
+        params: list = [f"%{q}%"]
+        if only_unverified:
+            where.append("l.last_verified_at is null")
+
+        sql = f"""
+            select c.id as city_id, c.city, c.state_code, c.population,
+                   l.id as leader_id, l.full_name, l.leader_title,
+                   l.political_party, l.last_verified_at, c.url
+            from cities c
+            left join leaders l on l.city_id = c.id and l.is_current = true
+            where {" and ".join(where)}
+            order by c.population desc nulls last, c.city
+            limit %s
+        """
+        params.append(limit)
+        with get_cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+        return {"cities": rows, "count": len(rows)}
+
     # -----------------------------------------------------------------------
     # Leader proposals (data-quality review queue)
     #
