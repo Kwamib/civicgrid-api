@@ -401,11 +401,11 @@ def attach_admin_routes(app, get_cursor):
                 insert into leaders (
                     city_id, full_name, last_name, leader_title, political_party,
                     year_elected, next_election_year, tenure_years, term_length_years,
-                    is_current, created_at, updated_at
+                    is_current, created_at, updated_at, last_verified_at
                 )
-                values (%s, %s, %s, 'Mayor', null, null, null, null, null, true, now(), now())
+                values (%s, %s, %s, 'Mayor', null, null, null, null, null, true, now(), now(), now())
                 returning id, city_id, full_name, last_name, leader_title,
-                          political_party, is_current, created_at, updated_at
+                          political_party, is_current, created_at, updated_at, last_verified_at
                 """,
                 (city_id, full_name, last_name),
             )
