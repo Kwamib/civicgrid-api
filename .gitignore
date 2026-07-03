@@ -21,3 +21,8 @@ build/
 *.log
 .coverage
 htmlcov/
+
+# Data-quality verifier outputs (generated, not source)
+results.jsonl
+proposals.json
+mismatches.json

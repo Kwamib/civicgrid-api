@@ -303,6 +303,169 @@ def attach_admin_routes(app, get_cursor):
             "new_current": new_leader,
         }
 
+    # -----------------------------------------------------------------------
+    # Leader proposals (data-quality review queue)
+    #
+    # The verifier writes rows into leader_proposals (status='pending'). These
+    # endpoints let an admin review and act on them:
+    #   GET    /admin/proposals              list pending (biggest cities first)
+    #   POST   /admin/proposals/{id}/approve apply the correction (rotate leader)
+    #   POST   /admin/proposals/{id}/reject  discard the proposal
+    # Approve reuses the same demote+insert+emit transaction as rotate_leader.
+    # -----------------------------------------------------------------------
+
+    @app.get("/admin/proposals", tags=["admin"])
+    def list_proposals(
+        authorization: str | None = Header(None),
+        status: str = "pending",
+        limit: int = 100,
+        offset: int = 0,
+    ):
+        """List proposals by status (default pending), biggest cities first."""
+        require_admin(authorization)
+        limit = max(1, min(limit, 500))
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                select id, city_id, city, state_code, population,
+                       db_mayor, web_mayor, source_url, confidence,
+                       status, created_at, reviewed_at
+                from leader_proposals
+                where status = %s
+                order by population desc nulls last, city
+                limit %s offset %s
+                """,
+                (status, limit, offset),
+            )
+            rows = cur.fetchall()
+            cur.execute(
+                "select count(*) as n from leader_proposals where status = %s",
+                (status,),
+            )
+            total = cur.fetchone()["n"]
+        return {"proposals": rows, "total": total, "limit": limit, "offset": offset}
+
+    @app.post("/admin/proposals/{proposal_id}/approve", tags=["admin"])
+    def approve_proposal(
+        proposal_id: int,
+        authorization: str | None = Header(None),
+    ):
+        """Apply a proposal: rotate the city's leader to web_mayor, mark approved.
+
+        One transaction: read proposal -> demote current leader -> insert the
+        corrected leader as current -> mark proposal approved -> emit event.
+        All-or-nothing via get_cursor(). Party follows Option-A policy: we only
+        verified the NAME, so party is left null (nonpartisan default handled
+        elsewhere); title defaults to 'Mayor'.
+        """
+        require_admin(authorization)
+
+        with get_cursor() as cur:
+            # 1. Load the proposal (must be pending).
+            cur.execute(
+                """
+                select id, city_id, city, state_code, web_mayor, status
+                from leader_proposals where id = %s
+                """,
+                (proposal_id,),
+            )
+            prop = cur.fetchone()
+            if not prop:
+                raise HTTPException(status_code=404, detail="Proposal not found.")
+            if prop["status"] != "pending":
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Proposal already {prop['status']}.",
+                )
+
+            full_name = (prop["web_mayor"] or "").strip()
+            if not full_name:
+                raise HTTPException(
+                    status_code=422, detail="Proposal has no web_mayor to apply."
+                )
+            last_name = full_name.split()[-1]
+            city_id = prop["city_id"]
+
+            # 2. Demote current incumbent(s).
+            cur.execute(
+                """
+                update leaders set is_current = false, updated_at = now()
+                where city_id = %s and is_current = true
+                returning id, full_name
+                """,
+                (city_id,),
+            )
+            demoted = cur.fetchall()
+
+            # 3. Insert corrected leader as current (name only; party per policy).
+            cur.execute(
+                """
+                insert into leaders (
+                    city_id, full_name, last_name, leader_title, political_party,
+                    year_elected, next_election_year, tenure_years, term_length_years,
+                    is_current, created_at, updated_at
+                )
+                values (%s, %s, %s, 'Mayor', null, null, null, null, null, true, now(), now())
+                returning id, city_id, full_name, last_name, leader_title,
+                          political_party, is_current, created_at, updated_at
+                """,
+                (city_id, full_name, last_name),
+            )
+            new_leader = cur.fetchone()
+
+            # 4. Mark the proposal approved.
+            cur.execute(
+                """
+                update leader_proposals
+                set status = 'approved', reviewed_at = now()
+                where id = %s
+                """,
+                (proposal_id,),
+            )
+
+            # 5. Emit event in the SAME transaction.
+            emit_event(
+                cur,
+                EVENT_LEADER_ROTATED,
+                {
+                    "city": {"id": city_id, "city": prop["city"],
+                             "state_code": prop["state_code"]},
+                    "leader": new_leader,
+                    "demoted": [dict(d) for d in demoted],
+                    "source": "proposal_approval",
+                    "proposal_id": proposal_id,
+                },
+            )
+
+        return {"approved": True, "proposal_id": proposal_id,
+                "city_id": city_id, "new_leader": new_leader,
+                "demoted": [dict(d) for d in demoted]}
+
+    @app.post("/admin/proposals/{proposal_id}/reject", tags=["admin"])
+    def reject_proposal(
+        proposal_id: int,
+        authorization: str | None = Header(None),
+    ):
+        """Discard a proposal (no DB change to leaders)."""
+        require_admin(authorization)
+        with get_cursor() as cur:
+            cur.execute(
+                """
+                update leader_proposals
+                set status = 'rejected', reviewed_at = now()
+                where id = %s and status = 'pending'
+                returning id
+                """,
+                (proposal_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Proposal not found or not pending.",
+                )
+        return {"rejected": True, "proposal_id": proposal_id}
+
     @app.patch("/admin/cities/{city_id}/leaders/{leader_id}", tags=["admin"])
     def patch_leader(
         city_id: int,
