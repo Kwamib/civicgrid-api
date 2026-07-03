@@ -380,9 +380,7 @@ def attach_admin_routes(app, get_cursor):
 
             full_name = (prop["web_mayor"] or "").strip()
             if not full_name:
-                raise HTTPException(
-                    status_code=422, detail="Proposal has no web_mayor to apply."
-                )
+                raise HTTPException(status_code=422, detail="Proposal has no web_mayor to apply.")
             last_name = full_name.split()[-1]
             city_id = prop["city_id"]
 
@@ -428,8 +426,7 @@ def attach_admin_routes(app, get_cursor):
                 cur,
                 EVENT_LEADER_ROTATED,
                 {
-                    "city": {"id": city_id, "city": prop["city"],
-                             "state_code": prop["state_code"]},
+                    "city": {"id": city_id, "city": prop["city"], "state_code": prop["state_code"]},
                     "leader": new_leader,
                     "demoted": [dict(d) for d in demoted],
                     "source": "proposal_approval",
@@ -437,9 +434,13 @@ def attach_admin_routes(app, get_cursor):
                 },
             )
 
-        return {"approved": True, "proposal_id": proposal_id,
-                "city_id": city_id, "new_leader": new_leader,
-                "demoted": [dict(d) for d in demoted]}
+        return {
+            "approved": True,
+            "proposal_id": proposal_id,
+            "city_id": city_id,
+            "new_leader": new_leader,
+            "demoted": [dict(d) for d in demoted],
+        }
 
     @app.post("/admin/proposals/{proposal_id}/reject", tags=["admin"])
     def reject_proposal(
