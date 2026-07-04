@@ -98,6 +98,7 @@ class RotateLeaderRequest(BaseModel):
     next_election_year: int | None = Field(default=None, ge=1700, le=2100)
     tenure_years: int | None = Field(default=None, ge=0, le=100)
     term_length_years: int | None = Field(default=None, ge=1, le=20)
+    source: str | None = Field(default=None, max_length=500)
 
 
 class PatchLeaderRequest(BaseModel):
@@ -276,6 +277,16 @@ def attach_admin_routes(app, get_cursor):
                 ),
             )
             new_leader = cur.fetchone()
+
+            # Record this manual edit as a verification (human-confirmed).
+            cur.execute(
+                """
+                insert into verification_results
+                    (city_id, verdict, web_mayor, source, model)
+                values (%s, 'MANUAL', %s, %s, 'human')
+                """,
+                (city_id, full_name, req.source),
+            )
 
             # Outbox write, in the SAME transaction as the rotation above.
             # If anything here raises, get_cursor() rolls back the whole thing
