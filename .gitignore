@@ -26,3 +26,5 @@ htmlcov/
 results.jsonl
 proposals.json
 mismatches.json
+*.jsonl
+*.bak
