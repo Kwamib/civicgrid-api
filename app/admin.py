@@ -99,6 +99,7 @@ class RotateLeaderRequest(BaseModel):
     tenure_years: int | None = Field(default=None, ge=0, le=100)
     term_length_years: int | None = Field(default=None, ge=1, le=20)
     source: str | None = Field(default=None, max_length=500)
+    governance_type: str | None = Field(default=None, max_length=50)
 
 
 class PatchLeaderRequest(BaseModel):
@@ -288,6 +289,13 @@ def attach_admin_routes(app, get_cursor):
                 (city_id, full_name, req.source),
             )
 
+            # Set governance type on the city if provided (e.g. select_board).
+            if req.governance_type:
+                cur.execute(
+                    "update cities set governance_type = %s where id = %s",
+                    (req.governance_type, city_id),
+                )
+
             # Outbox write, in the SAME transaction as the rotation above.
             # If anything here raises, get_cursor() rolls back the whole thing
             # (demote + insert + event), so the event can't outlive a failed
@@ -313,6 +321,61 @@ def attach_admin_routes(app, get_cursor):
             "previous_current": demoted,
             "new_current": new_leader,
         }
+
+    @app.get("/admin/unsure", tags=["admin"])
+    def list_unsure(
+        authorization: str | None = Header(None),
+        limit: int = 50,
+        offset: int = 0,
+    ):
+        """UNSURE worklist: cities the verifier couldn't confidently determine.
+
+        Pulls the latest UNSURE verdict per city from verification_results, joined
+        to the current leader + governance_type. Excludes cities that have since
+        been verified (last_verified_at set) — those are already resolved, so they
+        drop off the worklist automatically. Ordered by population desc.
+        """
+        require_admin(authorization)
+        limit = max(1, min(limit, 200))
+
+        sql = """
+            with latest_unsure as (
+                select distinct on (city_id) city_id, verified_at, source
+                from verification_results
+                where verdict = 'UNSURE'
+                order by city_id, verified_at desc
+            )
+            select c.id as city_id, c.city, c.state_code, c.population,
+                   c.governance_type,
+                   l.id as leader_id, l.full_name, l.leader_title,
+                   l.last_verified_at, c.url,
+                   u.verified_at as flagged_at
+            from latest_unsure u
+            join cities c on c.id = u.city_id
+            left join leaders l on l.city_id = c.id and l.is_current = true
+            where l.last_verified_at is null       -- not yet resolved
+            order by c.population desc nulls last, c.city
+            limit %s offset %s
+        """
+        with get_cursor() as cur:
+            cur.execute(sql, (limit, offset))
+            rows = cur.fetchall()
+            # total remaining
+            cur.execute("""
+                with latest_unsure as (
+                    select distinct on (city_id) city_id
+                    from verification_results
+                    where verdict = 'UNSURE'
+                    order by city_id, verified_at desc
+                )
+                select count(*) as n
+                from latest_unsure u
+                join cities c on c.id = u.city_id
+                left join leaders l on l.city_id = c.id and l.is_current = true
+                where l.last_verified_at is null
+            """)
+            total = cur.fetchone()["n"]
+        return {"cities": rows, "count": len(rows), "total_remaining": total}
 
     @app.get("/admin/cities/search", tags=["admin"])
     def search_cities(
