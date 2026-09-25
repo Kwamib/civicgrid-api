@@ -28,3 +28,4 @@ proposals.json
 mismatches.json
 *.jsonl
 *.bak
+*.env
