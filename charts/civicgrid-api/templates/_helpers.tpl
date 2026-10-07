@@ -80,3 +80,27 @@ Admin secret name. Used by /admin/keys endpoints.
 {{- printf "%s-admin" (include "civicgrid-api.fullname" .) }}
 {{- end }}
 {{- end }}
+
+{{/*
+Webhook-drain selector labels. Deliberately uses a different
+app.kubernetes.io/name so drain pods never match the API Deployment's
+selector (and therefore never land in the Service's endpoints or the
+HPA's pod count). Do NOT include civicgrid-api.selectorLabels here.
+*/}}
+{{- define "civicgrid-api.webhookDrainSelectorLabels" -}}
+app.kubernetes.io/name: {{ printf "%s-webhook-drain" (include "civicgrid-api.name" .) | trunc 63 | trimSuffix "-" }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/component: webhook-drain
+{{- end }}
+
+{{/*
+Webhook-drain common labels (CronJob object metadata).
+*/}}
+{{- define "civicgrid-api.webhookDrainLabels" -}}
+helm.sh/chart: {{ include "civicgrid-api.chart" . }}
+{{ include "civicgrid-api.webhookDrainSelectorLabels" . }}
+{{- if .Chart.AppVersion }}
+app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
+{{- end }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- end }}
