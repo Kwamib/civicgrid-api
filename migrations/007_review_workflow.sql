@@ -78,3 +78,9 @@ drop trigger if exists trg_review_events_append_only on review_events;
 create trigger trg_review_events_append_only
     before update or delete on review_events
     for each row execute function review_events_append_only();
+
+-- Not part of the public Data API. The API connects to Postgres directly;
+-- browsers must never read or write the audit log via /rest/v1.
+alter table review_events enable row level security;
+revoke all on table review_events from anon, authenticated;
+revoke all on sequence review_events_id_seq from anon, authenticated;
