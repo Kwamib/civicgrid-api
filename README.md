@@ -104,9 +104,24 @@ Public city rows now also carry `governance_type`, `leader_last_verified_at`,
 `official_leader_page`. `GET /cities/{id}` adds `leadership_history` and
 `published_changes`. Unpublished findings and reviewer identities are never public.
 
+## Tier access
+
+Full-dataset export is a paid feature (`app/access.py`):
+
+- `/cities/all` and `/leaders/export` return **403 `upgrade_required`** for free keys.
+  Override the allowed tiers with `BULK_EXPORT_TIERS` (default `starter,pro`).
+- Free keys get at most **25 rows per page** on `/cities` and `/leaders/current`
+  (`FREE_PAGE_LIMIT`). Totals stay accurate, so clients can still paginate.
+- `/cities/all` is now `Cache-Control: private` so an edge cache can never serve a
+  paid response to a free key.
+
 ### Rollout
 
 1. Run `migrations/007_review_workflow.sql` in Supabase. It is additive and idempotent.
+1b. **Check the website's key tier first.** civicgrid-web reads `/cities/all` with
+   `CIVICGRID_API_KEY`. If that key is `free`, every city page will go blank.
+   Check it with `select key_prefix, tier from api_keys where revoked_at is null;`
+   and move it to `pro` if needed: `update api_keys set tier = 'pro' where key_prefix = '<prefix>';`
 2. Deploy this API version.
 3. Deploy civicgrid-web. The web app tolerates the older API but needs this
    version for Correct, Retry, and the verification fields.

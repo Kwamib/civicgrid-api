@@ -330,9 +330,9 @@ def test_public_rows_expose_verification_but_not_findings(client, city):
         (cid,),
     )
 
-    key = client.post("/admin/keys", headers=AUTH, json={"user_email": "dev@example.com"}).json()[
-        "key"
-    ]
+    key = client.post(
+        "/admin/keys", headers=AUTH, json={"user_email": "dev@example.com", "tier": "pro"}
+    ).json()["key"]
     api = {"Authorization": f"Bearer {key}"}
     rows = client.get("/cities/all", headers=api).json()["data"]
     row = next(r for r in rows if r["id"] == cid)
@@ -355,12 +355,44 @@ def test_public_rows_expose_verification_but_not_findings(client, city):
 
 def test_unverified_city_has_null_verification_fields(client, city):
     cid, lid, pid = city()
-    key = client.post("/admin/keys", headers=AUTH, json={"user_email": "dev2@example.com"}).json()[
-        "key"
-    ]
+    key = client.post(
+        "/admin/keys", headers=AUTH, json={"user_email": "dev2@example.com", "tier": "starter"}
+    ).json()["key"]
     rows = client.get("/cities/all", headers={"Authorization": f"Bearer {key}"}).json()["data"]
     row = next(r for r in rows if r["id"] == cid)
     assert row["leader_last_verified_at"] is None
     assert row["last_verified_method"] is None
     assert row["verification_source_url"] is None
     assert row["last_checked_at"] is None
+
+
+def _key(client, email, tier):
+    r = client.post("/admin/keys", headers=AUTH, json={"user_email": email, "tier": tier})
+    return {"Authorization": f"Bearer {r.json()['key']}"}
+
+
+def test_free_tier_cannot_bulk_export(client, city):
+    city()
+    free = _key(client, "free@example.com", "free")
+    for path in ("/cities/all", "/leaders/export"):
+        r = client.get(path, headers=free)
+        assert r.status_code == 403, path
+        assert r.json()["detail"]["error"] == "upgrade_required"
+    paid = _key(client, "paid@example.com", "starter")
+    for path in ("/cities/all", "/leaders/export"):
+        r = client.get(path, headers=paid)
+        assert r.status_code == 200, path
+        assert r.headers["cache-control"].startswith("private")
+
+
+def test_free_tier_page_size_is_capped(client, city):
+    for _ in range(30):
+        city()
+    free = _key(client, "free2@example.com", "free")
+    r = client.get("/cities?limit=500", headers=free).json()
+    assert len(r["data"]) == 25 and r["pagination"]["limit"] == 25
+    assert r["pagination"]["total"] >= 30  # totals stay honest
+    leaders = client.get("/leaders/current?limit=500", headers=free)
+    assert leaders.status_code == 200 and len(leaders.json()["data"]) <= 25
+    pro = _key(client, "pro2@example.com", "pro")
+    assert len(client.get("/cities?limit=500", headers=pro).json()["data"]) >= 30

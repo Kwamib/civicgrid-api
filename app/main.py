@@ -2,12 +2,13 @@ import os
 from contextlib import contextmanager
 from urllib.parse import unquote, urlparse
 
-from fastapi import FastAPI, HTTPException, Query, Response
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
 
+from app.access import clamp_page_limit, require_bulk_export
 from app.admin import attach_admin_routes
 from app.auth import AuthMiddleware
 from app.export import attach_export_routes
@@ -170,6 +171,7 @@ def health():
 
 @app.get("/cities")
 def list_cities(
+    request: Request,
     state: str | None = Query(None),
     city_type: str | None = Query(None),
     min_pop: int | None = Query(None, ge=0),
@@ -178,6 +180,7 @@ def list_cities(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
+    limit = clamp_page_limit(request, limit)
     where = []
     params: list = []
 
@@ -234,7 +237,7 @@ def list_cities(
 
 
 @app.get("/cities/all")
-def all_cities(response: Response):
+def all_cities(request: Request, response: Response):
     """Bulk fetch endpoint - returns every city with current leader in one query.
 
     Designed for clients that need the full dataset (e.g. the landing page's
@@ -243,9 +246,11 @@ def all_cities(response: Response):
     Response is intentionally NOT paginated and NOT filtered - clients filter
     locally. Total payload is ~500KB JSON for 3,063 cities.
 
-    Cache hint: response is safe to cache at edge for 1 hour. Underlying data
-    changes infrequently (mayors change a few times per year at most).
+    Paid tiers only (see app/access.py). Because access now depends on the
+    caller's key, the response is cacheable by the client only ("private"),
+    never by a shared/edge cache that could serve it to a free key.
     """
+    require_bulk_export(request)
     sql = f"""
         {VERIFICATION_CTES}
         select
@@ -267,9 +272,7 @@ def all_cities(response: Response):
         cur.execute(sql)
         rows = cur.fetchall()
 
-    response.headers["Cache-Control"] = (
-        "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400"
-    )
+    response.headers["Cache-Control"] = "private, max-age=300"
     return {"data": rows, "count": len(rows)}
 
 
@@ -346,11 +349,13 @@ def get_city(city_id: int):
 
 @app.get("/leaders/current")
 def list_current_leaders(
+    request: Request,
     party: str | None = Query(None),
     state: str | None = Query(None),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
+    limit = clamp_page_limit(request, limit)
     where = ["l.is_current = true"]
     params: list = []
 
