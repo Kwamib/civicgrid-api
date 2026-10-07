@@ -13,14 +13,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import Response
+from fastapi import Request, Response
+
+from app.access import require_bulk_export
 
 
 def attach_export_routes(app, get_cursor):
     """Register export routes on the FastAPI app. Called from main.py."""
 
     @app.get("/leaders/export", tags=["export"])
-    def export_leaders(response: Response):
+    def export_leaders(request: Request, response: Response):
         """Full leader history export: every leader (current AND historical),
         grouped under their city.
 
@@ -32,7 +34,10 @@ def attach_export_routes(app, get_cursor):
         Within each city, the current leader is listed first, then historical
         leaders in insertion order. Cities are ordered by population (desc) to
         match the other read endpoints.
+
+        Paid tiers only (see app/access.py).
         """
+        require_bulk_export(request)
         sql = """
             select
                 c.id as city_id, c.city, c.state_code, c.state_name, c.population,

@@ -4,8 +4,7 @@ kind: CronJob
 metadata:
   name: {{ include "civicgrid-api.fullname" . }}-webhook-drain
   labels:
-    {{- include "civicgrid-api.labels" . | nindent 4 }}
-    app.kubernetes.io/component: webhook-drain
+    {{- include "civicgrid-api.webhookDrainLabels" . | nindent 4 }}
 spec:
   schedule: {{ .Values.webhookDrain.schedule | quote }}
   # Forbid: if a run is still going when the next tick fires, skip the new one
@@ -23,8 +22,7 @@ spec:
       template:
         metadata:
           labels:
-            {{- include "civicgrid-api.selectorLabels" . | nindent 12 }}
-            app.kubernetes.io/component: webhook-drain
+            {{- include "civicgrid-api.webhookDrainSelectorLabels" . | nindent 12 }}
         spec:
           restartPolicy: Never
           serviceAccountName: {{ include "civicgrid-api.serviceAccountName" . }}
