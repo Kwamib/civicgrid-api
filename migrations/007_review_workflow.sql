@@ -82,5 +82,14 @@ create trigger trg_review_events_append_only
 -- Not part of the public Data API. The API connects to Postgres directly;
 -- browsers must never read or write the audit log via /rest/v1.
 alter table review_events enable row level security;
-revoke all on table review_events from anon, authenticated;
-revoke all on sequence review_events_id_seq from anon, authenticated;
+-- Supabase-only roles; skip on plain Postgres (local tests, fresh databases).
+do $$
+declare r text;
+begin
+    foreach r in array array['anon', 'authenticated'] loop
+        if exists (select 1 from pg_roles where rolname = r) then
+            execute format('revoke all on table review_events from %I', r);
+            execute format('revoke all on sequence review_events_id_seq from %I', r);
+        end if;
+    end loop;
+end $$;
