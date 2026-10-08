@@ -38,8 +38,8 @@ from fastapi import Body, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.admin import require_admin
-from app.webhook_events import EVENT_LEADER_ROTATED, EVENT_LEADER_UPDATED, emit_event
 from app.names import derive_last_name, strip_titles
+from app.webhook_events import EVENT_LEADER_ROTATED, EVENT_LEADER_UPDATED, emit_event
 
 REVIEWABLE_STATUSES = {"pending", "retry", "approved", "corrected", "rejected"}
 NAME_SUFFIXES = {"jr", "sr", "ii", "iii", "iv", "v"}

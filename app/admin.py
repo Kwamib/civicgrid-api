@@ -23,8 +23,8 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, EmailStr, Field
 
 from app.auth import generate_key
-from app.webhook_events import EVENT_LEADER_ROTATED, EVENT_LEADER_UPDATED, emit_event
 from app.names import NameNeedsReview, clean_full_name, derive_last_name, same_person
+from app.webhook_events import EVENT_LEADER_ROTATED, EVENT_LEADER_UPDATED, emit_event
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -228,7 +228,7 @@ def attach_admin_routes(app, get_cursor):
         try:
             full_name = clean_full_name(req.full_name)
         except NameNeedsReview as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         last_name = (req.last_name or derive_last_name(full_name)).strip()
 
         with get_cursor() as cur:
