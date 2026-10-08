@@ -41,14 +41,14 @@ def attach_export_routes(app, get_cursor):
         sql = """
             select
                 c.id as city_id, c.city, c.state_code, c.state_name, c.population,
-                l.id as leader_id, l.full_name, l.last_name, l.leader_title,
+                l.id as leader_id, l.full_name, l.last_name, l.leader_title, l.role,
                 l.political_party, l.year_elected, l.next_election_year,
                 l.tenure_years, l.term_length_years, l.is_current,
                 l.created_at, l.updated_at
             from cities c
             join leaders l on l.city_id = c.id
             order by c.population desc nulls last, c.city asc,
-                     l.is_current desc, l.id asc
+                     l.is_current desc, (l.role = 'chief_executive') desc, l.id asc
         """
         with get_cursor() as cur:
             cur.execute(sql)
@@ -77,6 +77,7 @@ def attach_export_routes(app, get_cursor):
                     "full_name": r["full_name"],
                     "last_name": r["last_name"],
                     "leader_title": r["leader_title"],
+                    "role": r["role"],
                     "political_party": r["political_party"],
                     "year_elected": r["year_elected"],
                     "next_election_year": r["next_election_year"],
