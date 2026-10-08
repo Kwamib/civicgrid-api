@@ -24,6 +24,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 from app.auth import generate_key
 from app.webhook_events import EVENT_LEADER_ROTATED, EVENT_LEADER_UPDATED, emit_event
+from app.names import NameNeedsReview, clean_full_name, derive_last_name, same_person
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -222,11 +223,13 @@ def attach_admin_routes(app, get_cursor):
         """
         require_admin(authorization)
 
-        full_name = req.full_name.strip()
-        if not full_name:
-            raise HTTPException(status_code=422, detail="full_name cannot be blank.")
-        # Derive last_name from the final token if the caller didn't supply one.
-        last_name = (req.last_name or full_name.split()[-1]).strip()
+        # Strip titles ("Mayor", ", Mayor", "Hon.") and refuse role titles
+        # (Vice/Acting/Interim/Pro Tem) that mean a different office.
+        try:
+            full_name = clean_full_name(req.full_name)
+        except NameNeedsReview as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        last_name = (req.last_name or derive_last_name(full_name)).strip()
 
         with get_cursor() as cur:
             # 1. Confirm the city exists; also grab display fields for the response.
@@ -238,46 +241,88 @@ def attach_admin_routes(app, get_cursor):
             if not city:
                 raise HTTPException(status_code=404, detail=f"City {city_id} not found.")
 
-            # 2. Demote the current incumbent(s). Zero rows is fine (no incumbent
-            #    yet); more than one row self-heals a data anomaly.
+            # 2. Same person already current? Update that row in place instead of
+            #    rotating, so history doesn't gain a fake transition.
             cur.execute(
-                """
-                update leaders
-                set is_current = false, updated_at = now()
-                where city_id = %s and is_current = true
-                returning id, full_name
-                """,
+                "select id, full_name from leaders where city_id = %s and is_current = true",
                 (city_id,),
             )
-            demoted = cur.fetchall()
-
-            # 3. Insert the new current leader.
-            cur.execute(
-                """
-                insert into leaders (
-                    city_id, full_name, last_name, leader_title, political_party,
-                    year_elected, next_election_year, tenure_years, term_length_years,
-                    is_current, created_at, updated_at, last_verified_at
+            incumbents = cur.fetchall()
+            if len(incumbents) == 1 and same_person(incumbents[0]["full_name"], full_name):
+                demoted = []
+                cur.execute(
+                    """
+                    update leaders set
+                        full_name = %s,
+                        last_name = %s,
+                        leader_title = coalesce(%s, leader_title),
+                        political_party = coalesce(%s, political_party),
+                        year_elected = coalesce(%s, year_elected),
+                        next_election_year = coalesce(%s, next_election_year),
+                        tenure_years = coalesce(%s, tenure_years),
+                        term_length_years = coalesce(%s, term_length_years),
+                        updated_at = now(),
+                        last_verified_at = now()
+                    where id = %s
+                    returning
+                        id, city_id, full_name, last_name, leader_title, political_party,
+                        year_elected, next_election_year, tenure_years, term_length_years,
+                        is_current, created_at, updated_at, last_verified_at
+                    """,
+                    (
+                        full_name,
+                        last_name,
+                        req.leader_title,
+                        req.political_party,
+                        req.year_elected,
+                        req.next_election_year,
+                        req.tenure_years,
+                        req.term_length_years,
+                        incumbents[0]["id"],
+                    ),
                 )
-                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, true, now(), now(), now())
-                returning
-                    id, city_id, full_name, last_name, leader_title, political_party,
-                    year_elected, next_election_year, tenure_years, term_length_years,
-                    is_current, created_at, updated_at, last_verified_at
-                """,
-                (
-                    city_id,
-                    full_name,
-                    last_name,
-                    req.leader_title,
-                    req.political_party,
-                    req.year_elected,
-                    req.next_election_year,
-                    req.tenure_years,
-                    req.term_length_years,
-                ),
-            )
-            new_leader = cur.fetchone()
+                new_leader = cur.fetchone()
+            else:
+                # 2. Demote the current incumbent(s). Zero rows is fine (no incumbent
+                #    yet); more than one row self-heals a data anomaly.
+                cur.execute(
+                    """
+                    update leaders
+                    set is_current = false, updated_at = now()
+                    where city_id = %s and is_current = true
+                    returning id, full_name
+                    """,
+                    (city_id,),
+                )
+                demoted = cur.fetchall()
+
+                # 3. Insert the new current leader.
+                cur.execute(
+                    """
+                    insert into leaders (
+                        city_id, full_name, last_name, leader_title, political_party,
+                        year_elected, next_election_year, tenure_years, term_length_years,
+                        is_current, created_at, updated_at, last_verified_at
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, true, now(), now(), now())
+                    returning
+                        id, city_id, full_name, last_name, leader_title, political_party,
+                        year_elected, next_election_year, tenure_years, term_length_years,
+                        is_current, created_at, updated_at, last_verified_at
+                    """,
+                    (
+                        city_id,
+                        full_name,
+                        last_name,
+                        req.leader_title,
+                        req.political_party,
+                        req.year_elected,
+                        req.next_election_year,
+                        req.tenure_years,
+                        req.term_length_years,
+                    ),
+                )
+                new_leader = cur.fetchone()
 
             # Record this manual edit as a verification (human-confirmed).
             cur.execute(
