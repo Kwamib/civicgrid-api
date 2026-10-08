@@ -36,7 +36,8 @@ _CITY_AGG_SQL = """
     order by c.state_code
 """
 
-# Current-leader party breakdown per state.
+# Current-leader party breakdown per state (chief executives only, so a city
+# with an administrator isn't counted twice).
 _PARTY_AGG_SQL = """
     select
         c.state_code,
@@ -44,6 +45,7 @@ _PARTY_AGG_SQL = """
         count(*) as n
     from cities c
     join leaders l on l.city_id = c.id and l.is_current = true
+                   and l.role = 'chief_executive'
     {where}
     group by c.state_code, coalesce(l.political_party, 'Unknown')
     order by c.state_code, n desc

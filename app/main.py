@@ -1,5 +1,6 @@
 import os
 from contextlib import contextmanager
+from typing import Literal
 from urllib.parse import unquote, urlparse
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -95,6 +96,20 @@ attach_me_routes(app, get_cursor)
 attach_export_routes(app, get_cursor)
 attach_state_routes(app, get_cursor)
 attach_webhook_admin_routes(app, get_cursor)
+
+
+# Leader roles (migration 008). A city has at most one current leader per role:
+#   chief_executive:     mayor, select board chair, village president... ("the leader")
+#   chief_administrator: town administrator, city manager... (appointed, optional)
+# Every "current leader" join below filters to chief_executive so a city with an
+# administrator never appears twice. The administrator is joined separately.
+ADMINISTRATOR_JOIN = """
+        left join leaders la on la.city_id = c.id and la.is_current = true
+                            and la.role = 'chief_administrator'
+"""
+ADMINISTRATOR_COLUMNS = """
+            la.full_name       as administrator_name,
+            la.leader_title    as administrator_title,"""
 
 
 # Verification fields exposed on public city rows (additive; see migration 007).
@@ -214,11 +229,12 @@ def list_cities(
             l.leader_title     as leader_title,
             l.political_party  as leader_party,
             l.year_elected     as leader_year_elected,
-            l.next_election_year as leader_next_election,
+            l.next_election_year as leader_next_election,{ADMINISTRATOR_COLUMNS}
 {VERIFICATION_COLUMNS}
         from cities c
         left join leaders l on l.city_id = c.id and l.is_current = true
-{VERIFICATION_JOINS}        {where_clause}
+                           and l.role = 'chief_executive'
+{ADMINISTRATOR_JOIN}{VERIFICATION_JOINS}        {where_clause}
         order by c.population desc nulls last, c.city asc
         limit %s offset %s
     """
@@ -262,11 +278,12 @@ def all_cities(request: Request, response: Response):
             l.leader_title     as leader_title,
             l.political_party  as leader_party,
             l.year_elected     as leader_year_elected,
-            l.next_election_year as leader_next_election,
+            l.next_election_year as leader_next_election,{ADMINISTRATOR_COLUMNS}
 {VERIFICATION_COLUMNS}
         from cities c
         left join leaders l on l.city_id = c.id and l.is_current = true
-{VERIFICATION_JOINS}        order by c.population desc nulls last, c.city asc
+                           and l.role = 'chief_executive'
+{ADMINISTRATOR_JOIN}{VERIFICATION_JOINS}        order by c.population desc nulls last, c.city asc
     """
     with get_cursor() as cur:
         cur.execute(sql)
@@ -280,18 +297,19 @@ def all_cities(request: Request, response: Response):
 def get_city(city_id: int):
     with get_cursor() as cur:
         cur.execute(
-            """
+            f"""
             select
                 c.*,
                 l.full_name        as leader_name,
                 l.leader_title     as leader_title,
                 l.political_party  as leader_party,
                 l.year_elected     as leader_year_elected,
-                l.next_election_year as leader_next_election,
+                l.next_election_year as leader_next_election,{ADMINISTRATOR_COLUMNS}
                 l.tenure_years     as leader_tenure
             from cities c
             left join leaders l on l.city_id = c.id and l.is_current = true
-            where c.id = %s
+                               and l.role = 'chief_executive'
+{ADMINISTRATOR_JOIN}            where c.id = %s
         """,
             (city_id,),
         )
@@ -310,16 +328,17 @@ def get_city(city_id: int):
         )
         prov = cur.fetchall()
 
-        # Published leadership history only: leader rows (current and former)
-        # and reviewer-approved changes. Unpublished findings and reviewer
+        # Published leadership history only: leader rows (current and former, every
+        # role) and reviewer-approved changes. Unpublished findings and reviewer
         # identities/notes are never exposed here.
         cur.execute(
             """
-            select id, full_name, leader_title, is_current,
+            select id, full_name, leader_title, role, is_current,
                    created_at as recorded_at, last_verified_at
             from leaders
             where city_id = %s
-            order by is_current desc, created_at desc nulls last, id desc
+            order by is_current desc, (role = 'chief_executive') desc,
+                     created_at desc nulls last, id desc
             limit 25
         """,
             (city_id,),
@@ -352,12 +371,13 @@ def list_current_leaders(
     request: Request,
     party: str | None = Query(None),
     state: str | None = Query(None),
+    role: Literal["chief_executive", "chief_administrator"] = Query("chief_executive"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
 ):
     limit = clamp_page_limit(request, limit)
-    where = ["l.is_current = true"]
-    params: list = []
+    where = ["l.is_current = true", "l.role = %s"]
+    params: list = [role]
 
     if party:
         where.append("l.political_party = %s")
@@ -371,7 +391,7 @@ def list_current_leaders(
 
     sql = f"""
         select
-            l.id, l.full_name, l.last_name, l.leader_title, l.political_party,
+            l.id, l.full_name, l.last_name, l.leader_title, l.role, l.political_party,
             l.year_elected, l.next_election_year, l.tenure_years, l.term_length_years,
             c.id as city_id, c.city, c.state_code, c.state_name, c.population
         from leaders l
@@ -412,7 +432,7 @@ def stats():
         cur.execute("""
             select coalesce(political_party, 'Unknown') as party, count(*) as n
             from leaders
-            where is_current = true
+            where is_current = true and role = 'chief_executive'
             group by political_party
             order by n desc
         """)

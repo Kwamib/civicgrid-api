@@ -12,6 +12,9 @@ Endpoints (all require Authorization: Bearer <ADMIN_TOKEN>):
   POST /admin/proposals/{id}/retry          Retry: re-check the source later, change nothing
   GET  /admin/review-events                 the audit log
 
+Scope: findings are about a city's chief executive (role 'chief_executive',
+migration 008). Administrators are managed through Fix-a-city only.
+
 Concurrency: every write locks the proposal and the city's current leader row
 (SELECT ... FOR UPDATE) and then checks that the record the reviewer saw is still
 the published one:
@@ -137,7 +140,7 @@ def _lock_for_review(cur, proposal_id: int) -> tuple[dict, dict | None]:
         """
         select id, full_name, leader_title, last_verified_at
         from leaders
-        where city_id = %s and is_current = true
+        where city_id = %s and is_current = true and role = 'chief_executive'
         order by id desc
         for update
         """,
@@ -171,7 +174,7 @@ def _publish_leader(
     cur.execute(
         """
         update leaders set is_current = false, updated_at = now()
-        where city_id = %s and is_current = true
+        where city_id = %s and is_current = true and role = 'chief_executive'
         returning id, full_name, leader_title
         """,
         (city_id,),
@@ -182,10 +185,11 @@ def _publish_leader(
         insert into leaders (
             city_id, full_name, last_name, leader_title, political_party,
             year_elected, next_election_year, tenure_years, term_length_years,
-            is_current, created_at, updated_at, last_verified_at
+            role, is_current, created_at, updated_at, last_verified_at
         )
-        values (%s, %s, %s, %s, null, null, null, null, null, true, now(), now(), now())
-        returning id, city_id, full_name, last_name, leader_title,
+        values (%s, %s, %s, %s, null, null, null, null, null,
+                'chief_executive', true, now(), now(), now())
+        returning id, city_id, full_name, last_name, leader_title, role,
                   political_party, is_current, created_at, updated_at, last_verified_at
         """,
         (city_id, strip_titles(full_name), derive_last_name(full_name), title),
@@ -305,6 +309,7 @@ def attach_review_routes(app, get_cursor):
                 from leader_proposals p
                 join cities c on c.id = p.city_id
                 left join leaders l on l.city_id = p.city_id and l.is_current = true
+                                   and l.role = 'chief_executive'
                 where p.status = %s
                 order by p.population desc nulls last, p.city, p.id
                 limit %s offset %s

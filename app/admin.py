@@ -8,7 +8,7 @@ Endpoints:
   POST   /admin/keys                                  Create a new API key for a user
   GET    /admin/keys                                  List all keys (prefix only — never recoverable)
   DELETE /admin/keys/{prefix}                         Revoke a key by prefix
-  POST   /admin/cities/{city_id}/leaders             Rotate a city's current leader (demote + insert, atomic)
+  POST   /admin/cities/{city_id}/leaders             Rotate a city's current leader for one role (demote + insert, atomic)
   PATCH  /admin/cities/{city_id}/leaders/{leader_id} Correct a leader's fields in place (partial update)
 
 Leader rotation and correction emit webhook events (leader.rotated /
@@ -18,6 +18,7 @@ leader.updated) into the outbox in the SAME transaction as the data change.
 from __future__ import annotations
 
 import os
+from typing import Literal
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, EmailStr, Field
@@ -87,8 +88,19 @@ class KeyInfo(BaseModel):
     request_count: int
 
 
+LeaderRole = Literal["chief_executive", "chief_administrator"]
+
+
 class RotateLeaderRequest(BaseModel):
-    """New current leader for a city. Existing current leader is demoted, not deleted."""
+    """New current leader for a city and role. The existing current holder of THAT
+    role is demoted, not deleted; the other role is never touched.
+
+    role: chief_executive (mayor, select board chair, village president: the
+    default, and what every public "leader" field means) or chief_administrator
+    (town administrator, city manager).
+    """
+
+    role: LeaderRole = "chief_executive"
 
     full_name: str = Field(min_length=1, max_length=200)
     # Optional: derived from the last whitespace-separated token of full_name if omitted.
@@ -212,9 +224,9 @@ def attach_admin_routes(app, get_cursor):
         req: RotateLeaderRequest,
         authorization: str | None = Header(None),
     ):
-        """Set a new current leader for a city.
+        """Set a new current leader for a city and role.
 
-        Demotes whoever is currently marked is_current=true (history preserved,
+        Demotes whoever currently holds req.role (history preserved,
         rows are never deleted) and inserts the new leader as current. The whole
         operation runs in ONE transaction via get_cursor(), which commits on a
         clean exit and rolls back on any exception. So the demotion and the
@@ -244,8 +256,9 @@ def attach_admin_routes(app, get_cursor):
             # 2. Same person already current? Update that row in place instead of
             #    rotating, so history doesn't gain a fake transition.
             cur.execute(
-                "select id, full_name from leaders where city_id = %s and is_current = true",
-                (city_id,),
+                "select id, full_name from leaders "
+                "where city_id = %s and is_current = true and role = %s",
+                (city_id, req.role),
             )
             incumbents = cur.fetchall()
             if len(incumbents) == 1 and same_person(incumbents[0]["full_name"], full_name):
@@ -267,7 +280,7 @@ def attach_admin_routes(app, get_cursor):
                     returning
                         id, city_id, full_name, last_name, leader_title, political_party,
                         year_elected, next_election_year, tenure_years, term_length_years,
-                        is_current, created_at, updated_at, last_verified_at
+                        role, is_current, created_at, updated_at, last_verified_at
                     """,
                     (
                         full_name,
@@ -289,10 +302,10 @@ def attach_admin_routes(app, get_cursor):
                     """
                     update leaders
                     set is_current = false, updated_at = now()
-                    where city_id = %s and is_current = true
-                    returning id, full_name
+                    where city_id = %s and is_current = true and role = %s
+                    returning id, full_name, role
                     """,
-                    (city_id,),
+                    (city_id, req.role),
                 )
                 demoted = cur.fetchall()
 
@@ -302,13 +315,13 @@ def attach_admin_routes(app, get_cursor):
                     insert into leaders (
                         city_id, full_name, last_name, leader_title, political_party,
                         year_elected, next_election_year, tenure_years, term_length_years,
-                        is_current, created_at, updated_at, last_verified_at
+                        role, is_current, created_at, updated_at, last_verified_at
                     )
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, true, now(), now(), now())
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, true, now(), now(), now())
                     returning
                         id, city_id, full_name, last_name, leader_title, political_party,
                         year_elected, next_election_year, tenure_years, term_length_years,
-                        is_current, created_at, updated_at, last_verified_at
+                        role, is_current, created_at, updated_at, last_verified_at
                     """,
                     (
                         city_id,
@@ -320,19 +333,23 @@ def attach_admin_routes(app, get_cursor):
                         req.next_election_year,
                         req.tenure_years,
                         req.term_length_years,
+                        req.role,
                     ),
                 )
                 new_leader = cur.fetchone()
 
-            # Record this manual edit as a verification (human-confirmed).
-            cur.execute(
-                """
-                insert into verification_results
-                    (city_id, verdict, web_mayor, source, model)
-                values (%s, 'MANUAL', %s, %s, 'human')
-                """,
-                (city_id, full_name, req.source),
-            )
+            # Record this manual edit as a verification (human-confirmed). Only for
+            # the chief executive: verification_results drives the public
+            # "last verified" fields, which describe the leader, not the administrator.
+            if req.role == "chief_executive":
+                cur.execute(
+                    """
+                    insert into verification_results
+                        (city_id, verdict, web_mayor, source, model)
+                    values (%s, 'MANUAL', %s, %s, 'human')
+                    """,
+                    (city_id, full_name, req.source),
+                )
 
             # Set governance type on the city if provided (e.g. select_board).
             if req.governance_type:
@@ -363,6 +380,7 @@ def attach_admin_routes(app, get_cursor):
             "city_id": city["id"],
             "city": city["city"],
             "state_code": city["state_code"],
+            "role": req.role,
             "previous_current": demoted,
             "new_current": new_leader,
         }
@@ -398,6 +416,7 @@ def attach_admin_routes(app, get_cursor):
             from latest_unsure u
             join cities c on c.id = u.city_id
             left join leaders l on l.city_id = c.id and l.is_current = true
+                                 and l.role = 'chief_executive'
             where l.last_verified_at is null       -- not yet resolved
             order by c.population desc nulls last, c.city
             limit %s offset %s
@@ -417,6 +436,7 @@ def attach_admin_routes(app, get_cursor):
                 from latest_unsure u
                 join cities c on c.id = u.city_id
                 left join leaders l on l.city_id = c.id and l.is_current = true
+                                 and l.role = 'chief_executive'
                 where l.last_verified_at is null
             """)
             total = cur.fetchone()["n"]
@@ -451,6 +471,7 @@ def attach_admin_routes(app, get_cursor):
                    l.political_party, l.last_verified_at, c.url
             from cities c
             left join leaders l on l.city_id = c.id and l.is_current = true
+                                 and l.role = 'chief_executive'
             where {" and ".join(where)}
             order by c.population desc nulls last, c.city
             limit %s
@@ -510,7 +531,7 @@ def attach_admin_routes(app, get_cursor):
             returning
                 id, city_id, full_name, last_name, leader_title, political_party,
                 year_elected, next_election_year, tenure_years, term_length_years,
-                is_current, created_at, updated_at
+                role, is_current, created_at, updated_at
         """
 
         with get_cursor() as cur:
