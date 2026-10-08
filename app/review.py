@@ -38,6 +38,7 @@ from fastapi import Body, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.admin import require_admin
+from app.names import derive_last_name, strip_titles
 from app.webhook_events import EVENT_LEADER_ROTATED, EVENT_LEADER_UPDATED, emit_event
 
 REVIEWABLE_STATUSES = {"pending", "retry", "approved", "corrected", "rejected"}
@@ -62,17 +63,6 @@ def norm_name(value: str | None) -> str:
     text = "".join(ch for ch in text if not unicodedata.combining(ch))
     text = re.sub(r"[^\w\s]", "", text.lower())
     return re.sub(r"\s+", " ", text).strip()
-
-
-def derive_last_name(full_name: str) -> str:
-    """Last name for leaders.last_name (NOT NULL). Skips Jr/Sr/III suffixes."""
-    parts = full_name.replace(",", " ").split()
-    if not parts:
-        return full_name.strip()
-    last = parts[-1]
-    if len(parts) > 1 and last.lower().rstrip(".") in NAME_SUFFIXES:
-        last = parts[-2]
-    return last
 
 
 def is_stale(proposal: dict, current: dict | None) -> bool:
@@ -198,7 +188,7 @@ def _publish_leader(
         returning id, city_id, full_name, last_name, leader_title,
                   political_party, is_current, created_at, updated_at, last_verified_at
         """,
-        (city_id, full_name, derive_last_name(full_name), title),
+        (city_id, strip_titles(full_name), derive_last_name(full_name), title),
     )
     new_leader = dict(cur.fetchone())
     _record_manual_verification(cur, city_id, full_name, source)
