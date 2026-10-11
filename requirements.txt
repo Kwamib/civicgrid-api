@@ -1,4 +1,4 @@
-fastapi>=0.115
+fastapi>=0.142.4
 pydantic[email]>=2.7
 uvicorn[standard]>=0.32
 psycopg2-binary>=2.9
