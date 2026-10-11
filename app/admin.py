@@ -17,8 +17,10 @@ leader.updated) into the outbox in the SAME transaction as the data change.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Literal
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, EmailStr, Field
@@ -113,6 +115,49 @@ class RotateLeaderRequest(BaseModel):
     term_length_years: int | None = Field(default=None, ge=1, le=20)
     source: str | None = Field(default=None, max_length=500)
     governance_type: str | None = Field(default=None, max_length=50)
+    # Reviewer says this is the CURRENT leader with a corrected spelling
+    # (e.g. "Quiton Lucas" -> "Quinton Lucas"): update the row in place even
+    # when the names differ by more than spacing or an initial.
+    same_person: bool = False
+
+
+class CityLinksRequest(BaseModel):
+    """Fix a city's website and/or official leadership page (Fix-a-city).
+
+    Only fields present are changed. Addresses must be on a .gov or
+    .<state>.us domain; anything else needs confirm_official=true (the
+    reviewer has checked it is the city's own site, e.g. dsm.city).
+    """
+
+    url: str | None = Field(default=None, max_length=500)
+    mayor_url: str | None = Field(default=None, max_length=500)
+    confirm_official: bool = False
+
+
+log = logging.getLogger("civicgrid.admin")
+
+
+def _official_url(value: str, state_code: str, confirm_official: bool, field: str) -> str:
+    """Normalise and check a city link; raise 422 if it fails the domain rule."""
+    v = value.strip()
+    if not v.lower().startswith(("http://", "https://")):
+        v = "https://" + v
+    host = (urlparse(v).hostname or "").lower()
+    if not host or "." not in host or " " in v:
+        raise HTTPException(status_code=422, detail=f"{field}: not a valid web address.")
+    state_suffix = f".{state_code.lower()}.us"
+    if not (host.endswith(".gov") or host.endswith(state_suffix) or confirm_official):
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "not_government_domain",
+                "message": (
+                    f"{field}: {host} is not a .gov or {state_suffix} address. Tick "
+                    "'confirmed official' if you have checked it is the city's own site."
+                ),
+            },
+        )
+    return v
 
 
 class PatchLeaderRequest(BaseModel):
@@ -324,7 +369,14 @@ def attach_admin_routes(app, get_cursor):
                 (city_id, req.role),
             )
             incumbents = cur.fetchall()
-            if len(incumbents) == 1 and same_person_spelling(incumbents[0]["full_name"], full_name):
+            if req.same_person and len(incumbents) != 1:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Spelling fix needs exactly one current leader to correct.",
+                )
+            if len(incumbents) == 1 and (
+                req.same_person or same_person_spelling(incumbents[0]["full_name"], full_name)
+            ):
                 demoted = []
                 cur.execute(
                     """
@@ -531,7 +583,8 @@ def attach_admin_routes(app, get_cursor):
         sql = f"""
             select c.id as city_id, c.city, c.state_code, c.population,
                    l.id as leader_id, l.full_name, l.leader_title,
-                   l.political_party, l.last_verified_at, c.url
+                   l.political_party, l.last_verified_at, c.url,
+                   c.mayor_url, c.last_check_outcome, c.last_check_at
             from cities c
             left join leaders l on l.city_id = c.id and l.is_current = true
                                  and l.role = 'chief_executive'
@@ -544,6 +597,71 @@ def attach_admin_routes(app, get_cursor):
             cur.execute(sql, params)
             rows = cur.fetchall()
         return {"cities": rows, "count": len(rows)}
+
+    @app.patch("/admin/cities/{city_id}/links", tags=["admin"])
+    def update_city_links(
+        city_id: int,
+        req: CityLinksRequest,
+        authorization: str | None = Header(None),
+    ):
+        """Set a city's website (url) and/or official leadership page (mayor_url).
+
+        A new leadership page is marked readable (fetch_status 'ok') and its
+        stored hash and last outcome are cleared, so the next verifier run
+        reads it fresh. Before/after values are logged.
+        """
+        require_admin(authorization)
+        if req.url is None and req.mayor_url is None:
+            raise HTTPException(status_code=422, detail="Provide url and/or mayor_url.")
+
+        with get_cursor() as cur:
+            cur.execute(
+                "select id, city, state_code, url, mayor_url, fetch_status from cities "
+                "where id = %s",
+                (city_id,),
+            )
+            before = cur.fetchone()
+            if not before:
+                raise HTTPException(status_code=404, detail=f"City {city_id} not found.")
+
+            sets, values = [], []
+            if req.url is not None:
+                sets.append("url = %s")
+                values.append(
+                    _official_url(req.url, before["state_code"], req.confirm_official, "Website")
+                )
+            if req.mayor_url is not None:
+                new_page = _official_url(
+                    req.mayor_url, before["state_code"], req.confirm_official, "Leadership page"
+                )
+                sets += [
+                    "mayor_url = %s",
+                    "fetch_status = 'ok'",
+                    "page_hash = null",
+                    "page_etag = null",
+                    "last_check_outcome = null",
+                    "last_check_at = null",
+                ]
+                values.append(new_page)
+            values.append(city_id)
+            cur.execute(
+                f"update cities set {', '.join(sets)} where id = %s "
+                "returning id, city, state_code, url, mayor_url, fetch_status",
+                values,
+            )
+            after = cur.fetchone()
+
+        log.info(
+            "city links updated: id=%s %s, %s | url %r -> %r | mayor_url %r -> %r",
+            city_id,
+            before["city"],
+            before["state_code"],
+            before["url"],
+            after["url"],
+            before["mayor_url"],
+            after["mayor_url"],
+        )
+        return {"before": before, "city": after}
 
     @app.get("/admin/queue", tags=["admin"])
     def manual_check_queue(
