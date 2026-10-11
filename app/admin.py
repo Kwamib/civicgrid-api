@@ -158,6 +158,58 @@ NON_NULLABLE_COLUMNS = {"full_name", "last_name"}
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Manual-check queue (migration 012: cities.last_check_outcome / last_check_at)
+# ---------------------------------------------------------------------------
+
+QUEUE_KINDS = ("unverified", "blocked", "no_name", "wrong_link")
+
+# Verifier outcomes (verify_mayors_v7.py) that put a city in each tab.
+QUEUE_OUTCOMES = {
+    "blocked": ("blocked", "soft_blocked", "robots_deny"),
+    "no_name": ("no_name", "bad_extract", "guard_blocked"),
+    "wrong_link": ("notfound", "off_domain", "wrong_state", "bad_page"),
+}
+
+
+def _sql_list(values) -> str:
+    return ", ".join("'" + v + "'" for v in values)  # constants above, never user input
+
+
+# A city whose leader was verified (by the verifier or a reviewer) within
+# this many days is resolved and appears in no tab. Saving in Fix-a-city
+# stamps a verification, so the city drops off at once.
+QUEUE_FRESH_DAYS = 180
+
+# One classification for every city, so tab counts and tab contents agree.
+QUEUE_SQL = f"""
+    with base as (
+        select c.id as city_id, c.city, c.state_code, c.population,
+               c.governance_type, c.url, c.mayor_url, c.fetch_status,
+               c.last_check_outcome, c.last_check_at,
+               l.id as leader_id, l.full_name, l.leader_title, l.last_verified_at,
+               coalesce(l.last_verified_at > now() - interval '{QUEUE_FRESH_DAYS} days', false)
+                   as resolved
+        from cities c
+        left join leaders l on l.city_id = c.id and l.is_current = true
+                             and l.role = 'chief_executive'
+    ),
+    classified as (
+        select *,
+            case
+                when resolved then null
+                when last_check_outcome in ({_sql_list(QUEUE_OUTCOMES["blocked"])}) then 'blocked'
+                when last_check_outcome in ({_sql_list(QUEUE_OUTCOMES["no_name"])}) then 'no_name'
+                when last_check_outcome in ({_sql_list(QUEUE_OUTCOMES["wrong_link"])})
+                     or mayor_url is null
+                     or coalesce(fetch_status, 'ok') <> 'ok' then 'wrong_link'
+                else 'unverified'
+            end as queue
+        from base
+    )
+"""
+
+
 def attach_admin_routes(app, get_cursor):
     """Register admin routes on the FastAPI app. Called from main.py."""
 
@@ -482,6 +534,56 @@ def attach_admin_routes(app, get_cursor):
             cur.execute(sql, params)
             rows = cur.fetchall()
         return {"cities": rows, "count": len(rows)}
+
+    @app.get("/admin/queue", tags=["admin"])
+    def manual_check_queue(
+        authorization: str | None = Header(None),
+        kind: str = "unverified",
+        limit: int = 25,
+        offset: int = 0,
+    ):
+        """Manual-check queue for Fix-a-city, largest cities first.
+
+        kind:
+          unverified  no traceable verification yet (or no leader on record)
+          blocked     the city's site refuses scripts: check it by hand
+          no_name     the page loaded but no leader name could be read
+          wrong_link  the official page is missing, dead, moved or off-site
+
+        Tabs are disjoint (a city is in at most one). A city whose leader was
+        verified in the last QUEUE_FRESH_DAYS days is in none.
+        Returns the page of cities plus the size of every tab.
+        """
+        require_admin(authorization)
+        if kind not in QUEUE_KINDS:
+            raise HTTPException(
+                status_code=422, detail=f"kind must be one of {', '.join(QUEUE_KINDS)}"
+            )
+        limit = max(1, min(limit, 100))
+        offset = max(0, offset)
+
+        with get_cursor() as cur:
+            cur.execute(
+                QUEUE_SQL
+                + """
+                select city_id, city, state_code, population, governance_type,
+                       leader_id, full_name, leader_title, last_verified_at, url,
+                       mayor_url, last_check_outcome, last_check_at
+                from classified
+                where queue = %s
+                order by population desc nulls last, city
+                limit %s offset %s
+                """,
+                (kind, limit, offset),
+            )
+            rows = cur.fetchall()
+            cur.execute(
+                QUEUE_SQL + "select queue, count(*) as n from classified "
+                "where queue is not null group by queue"
+            )
+            counts = {k: 0 for k in QUEUE_KINDS}
+            counts.update({r["queue"]: r["n"] for r in cur.fetchall()})
+        return {"kind": kind, "cities": rows, "count": len(rows), "counts": counts}
 
     # Leader proposals (the review queue) live in app/review.py.
 
