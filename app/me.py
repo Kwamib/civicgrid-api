@@ -144,6 +144,17 @@ class MeResponse(BaseModel):
     keys: list[dict]
 
 
+# Tiers a signed-in user may give themselves. Paid tiers (starter, pro) are
+# issued by request through POST /admin/keys; override with SELF_SERVE_TIERS
+# (comma-separated) if that ever changes.
+UPGRADE_CONTACT = "hello@civicgrid.org"
+
+
+def self_serve_tiers() -> set[str]:
+    raw = os.environ.get("SELF_SERVE_TIERS", "free")
+    return {t.strip().lower() for t in raw.split(",") if t.strip()}
+
+
 class CreateKeyRequest(BaseModel):
     label: str | None = Field(default=None, max_length=100)
     tier: str = Field(default="free", pattern="^(free|starter|pro)$")
@@ -216,6 +227,18 @@ def attach_me_routes(app, get_cursor):
     def create_my_key(req: CreateKeyRequest, authorization: str | None = Header(None)):
         """Generate a new API key for the authenticated user."""
         user = require_jwt_user(authorization)
+
+        if req.tier not in self_serve_tiers():
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "error": "tier_by_request",
+                    "message": (
+                        f"New keys start on the Free tier. The {req.tier} tier is available by "
+                        f"request: email {UPGRADE_CONTACT}."
+                    ),
+                },
+            )
 
         full_key, prefix, hashed = generate_key()
 
