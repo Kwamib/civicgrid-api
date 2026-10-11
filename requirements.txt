@@ -1,8 +1,11 @@
-fastapi>=0.115
-pydantic[email]>=2.7
-uvicorn[standard]>=0.32
-psycopg2-binary>=2.9
-prometheus-fastapi-instrumentator>=7.0
-bcrypt>=4.2
-redis>=5.2
-PyJWT[crypto]>=2.10
+# Exact versions, so every image build installs the same thing.
+# These match what production ran on Oct 10, 2026 (image sha-430ea18).
+# Upgrades come through Dependabot pull requests, which CI tests before merge.
+fastapi==0.142.2
+pydantic[email]==2.13.5
+uvicorn[standard]==0.54.0
+psycopg2-binary==2.9.13
+prometheus-fastapi-instrumentator==8.1.0
+bcrypt==5.0.0
+redis==8.1.0
+PyJWT[crypto]==2.15.1
