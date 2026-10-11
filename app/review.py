@@ -41,7 +41,7 @@ from fastapi import Body, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.admin import require_admin
-from app.names import derive_last_name, strip_titles
+from app.names import derive_last_name, same_person_spelling, strip_titles
 from app.webhook_events import EVENT_LEADER_ROTATED, EVENT_LEADER_UPDATED, emit_event
 
 REVIEWABLE_STATUSES = {"pending", "retry", "approved", "corrected", "rejected"}
@@ -197,6 +197,25 @@ def _publish_leader(
     new_leader = dict(cur.fetchone())
     _record_manual_verification(cur, city_id, full_name, source)
     return new_leader, demoted
+
+
+def _update_in_place(cur, leader_id: int, full_name: str, title: str) -> dict:
+    """Same person: refresh spelling, title and verified-now on the existing row.
+
+    No demotion and no new row, so history doesn't gain a fake transition.
+    """
+    cur.execute(
+        """
+        update leaders
+        set full_name = %s, last_name = %s, leader_title = %s,
+            last_verified_at = now(), updated_at = now()
+        where id = %s
+        returning id, city_id, full_name, last_name, leader_title, role,
+                  political_party, is_current, created_at, updated_at, last_verified_at
+        """,
+        (strip_titles(full_name), derive_last_name(full_name), title, leader_id),
+    )
+    return dict(cur.fetchone())
 
 
 def _record_manual_verification(cur, city_id: int, name: str, source: str | None) -> None:
@@ -373,9 +392,17 @@ def attach_review_routes(app, get_cursor):
                 or "Mayor"
             ).strip()
 
-            new_leader, demoted = _publish_leader(
-                cur, prop["city_id"], full_name, title, prop["source_url"]
-            )
+            spelling_only = bool(current) and same_person_spelling(current["full_name"], full_name)
+            if spelling_only:
+                new_leader = _update_in_place(cur, current["id"], full_name, title)
+                _record_manual_verification(
+                    cur, prop["city_id"], new_leader["full_name"], prop["source_url"]
+                )
+                demoted: list[dict] = []
+            else:
+                new_leader, demoted = _publish_leader(
+                    cur, prop["city_id"], full_name, title, prop["source_url"]
+                )
             _close(cur, proposal_id, "approved", actor, req.reason if req else None, new_leader)
             event_id = _audit(
                 cur,
@@ -389,7 +416,7 @@ def attach_review_routes(app, get_cursor):
             )
             emit_event(
                 cur,
-                EVENT_LEADER_ROTATED,
+                EVENT_LEADER_UPDATED if spelling_only else EVENT_LEADER_ROTATED,
                 {
                     "city": {
                         "id": prop["city_id"],
@@ -408,6 +435,7 @@ def attach_review_routes(app, get_cursor):
             "approved": True,
             "proposal_id": proposal_id,
             "city_id": prop["city_id"],
+            "spelling_update": spelling_only,
             "new_leader": new_leader,
             "demoted": demoted,
             "review_event_id": event_id,
@@ -440,19 +468,8 @@ def attach_review_routes(app, get_cursor):
                 or "Mayor"
             )
 
-            if current and norm_name(current["full_name"]) == norm_name(full_name):
-                cur.execute(
-                    """
-                    update leaders
-                    set leader_title = %s, last_verified_at = now(), updated_at = now()
-                    where id = %s
-                    returning id, city_id, full_name, last_name, leader_title,
-                              political_party, is_current, created_at, updated_at,
-                              last_verified_at
-                    """,
-                    (title, current["id"]),
-                )
-                new_leader = dict(cur.fetchone())
+            if current and same_person_spelling(current["full_name"], full_name):
+                new_leader = _update_in_place(cur, current["id"], full_name, title)
                 _record_manual_verification(cur, prop["city_id"], new_leader["full_name"], source)
                 demoted: list[dict] = []
                 event_type = EVENT_LEADER_UPDATED

@@ -24,7 +24,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, EmailStr, Field
 
 from app.auth import generate_key
-from app.names import NameNeedsReview, clean_full_name, derive_last_name, same_person
+from app.names import NameNeedsReview, clean_full_name, derive_last_name, same_person_spelling
 from app.webhook_events import EVENT_LEADER_ROTATED, EVENT_LEADER_UPDATED, emit_event
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -261,7 +261,7 @@ def attach_admin_routes(app, get_cursor):
                 (city_id, req.role),
             )
             incumbents = cur.fetchall()
-            if len(incumbents) == 1 and same_person(incumbents[0]["full_name"], full_name):
+            if len(incumbents) == 1 and same_person_spelling(incumbents[0]["full_name"], full_name):
                 demoted = []
                 cur.execute(
                     """

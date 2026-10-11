@@ -79,3 +79,36 @@ def same_person(a: str | None, b: str | None) -> bool:
     """
     left, right = norm_name(strip_titles(a)), norm_name(strip_titles(b))
     return bool(left) and left == right
+
+
+def _spelling_parts(name: str | None) -> tuple[set[str], str]:
+    """(single-letter initials, every other letter run together)."""
+    tokens = norm_name(strip_titles(name)).split()
+    initials = {t for t in tokens if len(t) == 1}
+    core = "".join(t for t in tokens if len(t) > 1)
+    return initials, core
+
+
+def same_person_spelling(a: str | None, b: str | None) -> bool:
+    """Same person written two ways: a strict match, or a spelling variant.
+
+    A variant has exactly the same letters once spacing inside the name and
+    middle initials are ignored, and one name's initials are a subset of the
+    other's:
+        "Don DeGraff"  == "Don A. De Graff"   (spacing + added initial)
+        "Beto Lopez"   == "J. Beto Lopez"     (added leading initial)
+    Still different people (a reviewer decides):
+        "Jim Smith"    != "James Smith"       (nicknames are never merged)
+        "John A. Smith" != "John B. Smith"    (conflicting initials)
+        "Frank Scott"  != "Frank Scott Jr."   (a suffix can mean father and son)
+
+    Added after approvals on Oct 9-10, 2026 recorded the same mayor as a new
+    mayor (Lee's Summit MO, South Holland IL), creating fake history.
+    """
+    if same_person(a, b):
+        return True
+    initials_a, core_a = _spelling_parts(a)
+    initials_b, core_b = _spelling_parts(b)
+    if not core_a or core_a != core_b:
+        return False
+    return initials_a <= initials_b or initials_b <= initials_a
