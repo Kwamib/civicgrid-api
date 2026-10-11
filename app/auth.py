@@ -9,14 +9,21 @@ Auth flow on each request:
   2. Verify prefix matches a non-revoked DB row
   3. bcrypt.checkpw the full key against the stored hash
   4. Attach user context (tier, email, key_id) to request.state
-  5. Update last_used_at and increment request_count (best-effort, non-blocking)
+  5. Update last_used_at and increment request_count (best-effort, batched)
+
+Steps 2 and 3 are skipped for a key verified in the last KEY_CACHE_SECONDS.
 
 Public routes bypass auth via the PUBLIC_PATHS set.
 """
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import os
 import secrets
+import threading
+import time
 from dataclasses import dataclass
 
 import bcrypt
@@ -95,6 +102,68 @@ def extract_prefix(full_key: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Verified-key cache
+# ---------------------------------------------------------------------------
+# bcrypt is deliberately slow (~0.1 s of CPU). Checking it on every request
+# made each API call cost a tenth of a CPU second, enough for one looping
+# client to push the API to its pod limit (Oct 10, 2026). After a key passes
+# bcrypt once, remember a SHA-256 of it for a short time and skip the database
+# lookup and bcrypt on repeat requests. A revoked or re-tiered key takes effect
+# within KEY_CACHE_SECONDS.
+
+KEY_CACHE_SECONDS = int(os.environ.get("KEY_CACHE_SECONDS", "60"))
+KEY_CACHE_MAX = 5000
+
+_key_cache: dict[str, tuple[bytes, dict, float]] = {}
+_key_cache_lock = threading.Lock()
+
+
+def _digest(full_key: str) -> bytes:
+    return hashlib.sha256(full_key.encode("utf-8")).digest()
+
+
+def cached_key_row(full_key: str, prefix: str) -> dict | None:
+    """Row for a recently verified key, or None if not cached / expired."""
+    if KEY_CACHE_SECONDS <= 0:
+        return None
+    with _key_cache_lock:
+        hit = _key_cache.get(prefix)
+        if not hit:
+            return None
+        digest, row, expires = hit
+        if time.monotonic() >= expires:
+            _key_cache.pop(prefix, None)
+            return None
+    if not hmac.compare_digest(digest, _digest(full_key)):
+        return None
+    return row
+
+
+def remember_key(full_key: str, row: dict) -> None:
+    if KEY_CACHE_SECONDS <= 0:
+        return
+    with _key_cache_lock:
+        if len(_key_cache) >= KEY_CACHE_MAX:
+            _key_cache.clear()
+        _key_cache[row["key_prefix"]] = (
+            _digest(full_key),
+            row,
+            time.monotonic() + KEY_CACHE_SECONDS,
+        )
+
+
+def forget_key(prefix: str) -> None:
+    """Drop one key from this pod's cache (call after revoking or re-tiering)."""
+    with _key_cache_lock:
+        _key_cache.pop(prefix, None)
+
+
+def clear_key_cache() -> None:
+    with _key_cache_lock:
+        _key_cache.clear()
+
+
 def lookup_key_by_prefix(get_cursor, prefix: str) -> dict | None:
     """Find an active (non-revoked) API key by its prefix.
 
@@ -117,18 +186,34 @@ def lookup_key_by_prefix(get_cursor, prefix: str) -> dict | None:
         return cur.fetchone()
 
 
+# Usage counts are written at most once per TOUCH_EVERY_SECONDS per key (with
+# the requests counted in between), not on every request.
+TOUCH_EVERY_SECONDS = 10
+
+_pending_touch: dict[int, tuple[int, float]] = {}
+_touch_lock = threading.Lock()
+
+
 def touch_key(get_cursor, key_id: int) -> None:
-    """Update last_used_at and increment request_count. Best-effort."""
+    """Update last_used_at and increment request_count. Best-effort, batched."""
+    now = time.monotonic()
+    with _touch_lock:
+        count, last_flush = _pending_touch.get(key_id, (0, 0.0))
+        count += 1
+        if now - last_flush < TOUCH_EVERY_SECONDS:
+            _pending_touch[key_id] = (count, last_flush)
+            return
+        _pending_touch[key_id] = (0, now)
     try:
         with get_cursor() as cur:
             cur.execute(
                 """
                 update api_keys
                 set last_used_at = now(),
-                    request_count = request_count + 1
+                    request_count = request_count + %s
                 where id = %s
                 """,
-                (key_id,),
+                (count, key_id),
             )
     except Exception:
         # Don't fail the request if usage tracking has a hiccup.
@@ -178,14 +263,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 401, "invalid_key_format", "Malformed API key. Keys start with 'cg_live_'."
             )
 
-        # Look up by prefix.
-        row = lookup_key_by_prefix(self.get_cursor, prefix)
-        if not row:
-            return _auth_error(401, "invalid_key", "API key not found or revoked.")
-
-        # bcrypt verify the full key.
-        if not verify_key(full_key, row["key_hash"]):
-            return _auth_error(401, "invalid_key", "API key not found or revoked.")
+        row = cached_key_row(full_key, prefix)
+        if row is None:
+            # Look up by prefix, then bcrypt verify the full key.
+            row = lookup_key_by_prefix(self.get_cursor, prefix)
+            if not row or not verify_key(full_key, row["key_hash"]):
+                return _auth_error(401, "invalid_key", "API key not found or revoked.")
+            remember_key(full_key, row)
 
         # Attach context for downstream middleware / handlers.
         request.state.auth = AuthContext(

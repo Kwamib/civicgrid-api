@@ -23,7 +23,7 @@ from typing import Literal
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, EmailStr, Field
 
-from app.auth import generate_key
+from app.auth import forget_key, generate_key
 from app.names import NameNeedsReview, clean_full_name, derive_last_name, same_person_spelling
 from app.webhook_events import EVENT_LEADER_ROTATED, EVENT_LEADER_UPDATED, emit_event
 
@@ -216,6 +216,7 @@ def attach_admin_routes(app, get_cursor):
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Key not found or already revoked.")
+        forget_key(row["key_prefix"])
         return {"revoked": True, "key_prefix": row["key_prefix"], "user_email": row["user_email"]}
 
     @app.post("/admin/cities/{city_id}/leaders", status_code=201, tags=["admin"])

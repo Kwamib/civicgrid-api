@@ -19,6 +19,7 @@ Returns 429 Too Many Requests with standard headers:
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 import time
@@ -39,6 +40,8 @@ TIERS: dict[str, dict[str, int]] = {
 }
 
 DEFAULT_TIER = "free"
+
+log = logging.getLogger("civicgrid.rate_limit")
 
 
 @dataclass
@@ -205,14 +208,46 @@ class RedisBackend:
         )
 
 
+class FailOpenBackend:
+    """Use the shared backend (Redis); if it errors, count in this pod instead.
+
+    Without this, a Redis outage would turn every API request into a 500.
+    Per-pod counting is weaker (each pod counts separately) but keeps the API
+    up. Logs at most one warning per minute while degraded.
+    """
+
+    WARN_EVERY_SECONDS = 60
+
+    def __init__(self, primary, fallback=None):
+        self.primary = primary
+        self.fallback = fallback or InMemoryBackend()
+        self._last_warning = 0.0
+
+    def check_and_increment(self, key: str, tier: str) -> LimitCheck:
+        try:
+            return self.primary.check_and_increment(key, tier)
+        except Exception as e:  # noqa: BLE001 - any backend failure must not take the API down
+            now = time.time()
+            if now - self._last_warning >= self.WARN_EVERY_SECONDS:
+                self._last_warning = now
+                log.warning("rate limit backend unavailable, counting per pod: %s", e)
+            return self.fallback.check_and_increment(key, tier)
+
+
 def get_backend():
-    """Construct the configured backend. Reads REDIS_URL env var; falls back to in-memory."""
+    """Construct the configured backend.
+
+    With REDIS_URL set, limits are shared across all API pods (required when
+    more than one pod runs). Without it, each pod counts on its own.
+    """
     redis_url = os.environ.get("REDIS_URL")
     if redis_url:
         try:
-            return RedisBackend(redis_url)
-        except Exception as e:
-            print(f"[rate_limit] Redis init failed, falling back to in-memory: {e}")
+            return FailOpenBackend(RedisBackend(redis_url))
+        except Exception as e:  # noqa: BLE001
+            log.warning("Redis init failed, counting per pod: %s", e)
+    else:
+        log.warning("REDIS_URL not set: rate limits are counted per pod")
     return InMemoryBackend()
 
 
