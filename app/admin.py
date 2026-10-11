@@ -171,6 +171,13 @@ QUEUE_OUTCOMES = {
     "wrong_link": ("notfound", "off_domain", "wrong_state", "bad_page"),
 }
 
+# Discovery's cities.fetch_status for cities the verifier never reads (it only
+# reads fetch_status = 'ok'). 'skip' is a deliberate exclusion: in no tab.
+FETCH_STATUS_QUEUE = {
+    "blocked": ("blocked", "robots_deny"),
+    "wrong_link": ("notfound", "no_mayor_pg", "unresolved", "no_site"),
+}
+
 
 def _sql_list(values) -> str:
     return ", ".join("'" + v + "'" for v in values)  # constants above, never user input
@@ -198,11 +205,14 @@ QUEUE_SQL = f"""
         select *,
             case
                 when resolved then null
+                when fetch_status = 'skip' then null
                 when last_check_outcome in ({_sql_list(QUEUE_OUTCOMES["blocked"])}) then 'blocked'
                 when last_check_outcome in ({_sql_list(QUEUE_OUTCOMES["no_name"])}) then 'no_name'
-                when last_check_outcome in ({_sql_list(QUEUE_OUTCOMES["wrong_link"])})
-                     or mayor_url is null
-                     or coalesce(fetch_status, 'ok') <> 'ok' then 'wrong_link'
+                when last_check_outcome in ({_sql_list(QUEUE_OUTCOMES["wrong_link"])}) then 'wrong_link'
+                when fetch_status in ({_sql_list(FETCH_STATUS_QUEUE["blocked"])}) then 'blocked'
+                when fetch_status is null
+                     or fetch_status in ({_sql_list(FETCH_STATUS_QUEUE["wrong_link"])})
+                     or mayor_url is null then 'wrong_link'
                 else 'unverified'
             end as queue
         from base

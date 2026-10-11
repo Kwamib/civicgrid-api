@@ -45,6 +45,9 @@ def queue(client):  # noqa: F811
         "dead_link": _city("Gonesville", 40_000, outcome="notfound"),
         "no_page": _city("Nopage", 30_000, mayor_url=None),
         "no_page_status": _city("Badfetch", 20_000, fetch_status="no_mayor_pg"),
+        "discovery_blocked": _city("Robotsville", 75_000, fetch_status="robots_deny"),
+        "discovery_null": _city("Nullton", 10_000, fetch_status=None),
+        "skipped": _city("Skipford", 65_000, fetch_status="skip"),
         "fresh_match": _city("Goodtown", 500_000, outcome="match", verified_days_ago=3),
         "fresh_but_blocked": _city("Okayblock", 400_000, outcome="blocked", verified_days_ago=10),
         "stale": _city("Oldtown", 300_000, outcome="match", verified_days_ago=400),
@@ -61,9 +64,9 @@ def _get(client, kind, **params):  # noqa: F811
 
 def test_each_tab_holds_the_right_cities(client, queue):  # noqa: F811
     assert _get(client, "unverified")[0] == ["Bigtown", "Oldtown", "Emptyville"]
-    assert _get(client, "blocked")[0] == ["Wallton", "Captcha City"]
+    assert _get(client, "blocked")[0] == ["Wallton", "Robotsville", "Captcha City"]
     assert _get(client, "no_name")[0] == ["Blankburg"]
-    assert _get(client, "wrong_link")[0] == ["Gonesville", "Nopage", "Badfetch"]
+    assert _get(client, "wrong_link")[0] == ["Gonesville", "Nopage", "Badfetch", "Nullton"]
 
 
 def test_recently_verified_cities_are_in_no_tab(client, queue):  # noqa: F811
@@ -71,6 +74,7 @@ def test_recently_verified_cities_are_in_no_tab(client, queue):  # noqa: F811
         c for k in ("unverified", "blocked", "no_name", "wrong_link") for c in _get(client, k)[0]
     ]
     assert "Goodtown" not in everything
+    assert "Skipford" not in everything, "fetch_status 'skip' is a deliberate exclusion"
     assert "Okayblock" not in everything, "verified 10 days ago: a blocked site can wait"
     assert len(everything) == len(set(everything)), "tabs are disjoint"
 
