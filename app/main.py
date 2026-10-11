@@ -1,5 +1,5 @@
 import os
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Literal
 from urllib.parse import unquote, urlparse
 
@@ -19,28 +19,6 @@ from app.review import attach_review_routes
 from app.states import attach_state_routes
 from app.webhooks_admin import attach_webhook_admin_routes
 
-app = FastAPI(
-    title="CivicGrid API",
-    description=(
-        "US mayors and city managers. 3,063+ records.\n\n"
-        "Most endpoints require authentication. Pass your API key via:\n"
-        "`Authorization: Bearer cg_live_...`\n\n"
-        "Public endpoints: `/`, `/health`, `/docs`."
-    ),
-    version="0.2.0",
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET", "POST", "DELETE"],
-    allow_headers=["*"],
-)
-
-# Prometheus instrumentation: exposes /metrics for scraping.
-Instrumentator().instrument(app).expose(app, include_in_schema=False)
-
-
 _pool: SimpleConnectionPool | None = None
 
 
@@ -58,16 +36,43 @@ def _conn_kwargs():
     }
 
 
-@app.on_event("startup")
-def startup():
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Open the connection pool at startup and close it cleanly at shutdown.
+
+    Replaces the deprecated @app.on_event("startup"/"shutdown") hooks. Closing
+    the pool on shutdown means a rolling restart hands connections back to the
+    pooler instead of cutting them off.
+    """
     global _pool
     _pool = SimpleConnectionPool(minconn=1, maxconn=5, **_conn_kwargs())
-
-
-@app.on_event("shutdown")
-def shutdown():
-    if _pool:
+    try:
+        yield
+    finally:
         _pool.closeall()
+
+
+app = FastAPI(
+    title="CivicGrid API",
+    description=(
+        "US mayors and city managers. 3,063+ records.\n\n"
+        "Most endpoints require authentication. Pass your API key via:\n"
+        "`Authorization: Bearer cg_live_...`\n\n"
+        "Public endpoints: `/`, `/health`, `/docs`."
+    ),
+    version="0.2.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "POST", "DELETE"],
+    allow_headers=["*"],
+)
+
+# Prometheus instrumentation: exposes /metrics for scraping.
+Instrumentator().instrument(app).expose(app, include_in_schema=False)
 
 
 @contextmanager
