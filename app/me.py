@@ -23,7 +23,7 @@ from fastapi import APIRouter, Header, HTTPException
 from jwt import PyJWKClient
 from pydantic import BaseModel, Field
 
-from app.auth import generate_key
+from app.auth import forget_key, generate_key
 
 router = APIRouter(prefix="/me", tags=["me"])
 
@@ -286,4 +286,5 @@ def attach_me_routes(app, get_cursor):
                     detail="Key not found, not yours, or already revoked.",
                 )
 
+        forget_key(row["key_prefix"])
         return {"revoked": True, "key_prefix": row["key_prefix"]}
