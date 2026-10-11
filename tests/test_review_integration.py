@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 import psycopg2
 import pytest
@@ -22,6 +23,18 @@ from psycopg2.extras import RealDictCursor
 
 DB_URL = os.environ.get("TEST_DATABASE_URL")
 pytestmark = pytest.mark.skipif(not DB_URL, reason="TEST_DATABASE_URL not set")
+
+# These tests drop the public schema. Refuse anything that is not a database on
+# this machine (a local Docker Postgres, or the CI service container), so a
+# production URL pasted into TEST_DATABASE_URL can never be wiped.
+# test_roles_integration imports DB_URL from here, so it is covered too.
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+if DB_URL and urlparse(DB_URL).hostname not in LOCAL_HOSTS:
+    pytest.exit(
+        f"Refusing to run: TEST_DATABASE_URL host {urlparse(DB_URL).hostname!r} is not "
+        "local, and these tests drop the public schema.",
+        returncode=2,
+    )
 
 ADMIN = "test-admin-token"
 AUTH = {"Authorization": f"Bearer {ADMIN}"}
