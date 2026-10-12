@@ -220,7 +220,7 @@ QUEUE_OUTCOMES = {
 # reads fetch_status = 'ok'). 'skip' is a deliberate exclusion: in no tab.
 FETCH_STATUS_QUEUE = {
     "blocked": ("blocked", "robots_deny"),
-    "wrong_link": ("notfound", "no_mayor_pg", "unresolved", "no_site"),
+    "wrong_link": ("notfound", "no_mayor_pg", "unresolved", "no_site", "wrong_state"),
 }
 
 
@@ -239,6 +239,7 @@ QUEUE_SQL = f"""
         select c.id as city_id, c.city, c.state_code, c.population,
                c.governance_type, c.url, c.mayor_url, c.fetch_status,
                c.last_check_outcome, c.last_check_at,
+               c.link_note, c.suggested_url,
                l.id as leader_id, l.full_name, l.leader_title, l.last_verified_at,
                coalesce(l.last_verified_at > now() - interval '{QUEUE_FRESH_DAYS} days', false)
                    as resolved
@@ -249,8 +250,11 @@ QUEUE_SQL = f"""
     classified as (
         select *,
             case
-                when resolved then null
                 when fetch_status = 'skip' then null
+                -- discovery found the website itself wrong (migration 013):
+                -- worth fixing even when the leader was verified recently
+                when link_note is not null or suggested_url is not null then 'wrong_link'
+                when resolved then null
                 when last_check_outcome in ({_sql_list(QUEUE_OUTCOMES["blocked"])}) then 'blocked'
                 when last_check_outcome in ({_sql_list(QUEUE_OUTCOMES["no_name"])}) then 'no_name'
                 when last_check_outcome in ({_sql_list(QUEUE_OUTCOMES["wrong_link"])}) then 'wrong_link'
@@ -584,7 +588,8 @@ def attach_admin_routes(app, get_cursor):
             select c.id as city_id, c.city, c.state_code, c.population,
                    l.id as leader_id, l.full_name, l.leader_title,
                    l.political_party, l.last_verified_at, c.url,
-                   c.mayor_url, c.last_check_outcome, c.last_check_at
+                   c.mayor_url, c.last_check_outcome, c.last_check_at,
+                   c.link_note, c.suggested_url
             from cities c
             left join leaders l on l.city_id = c.id and l.is_current = true
                                  and l.role = 'chief_executive'
@@ -626,6 +631,8 @@ def attach_admin_routes(app, get_cursor):
 
             sets, values = [], []
             if req.url is not None:
+                # a person fixed the website: discovery's note no longer applies
+                sets += ["link_note = null", "suggested_url = null"]
                 sets.append("url = %s")
                 values.append(
                     _official_url(req.url, before["state_code"], req.confirm_official, "Website")
@@ -676,7 +683,9 @@ def attach_admin_routes(app, get_cursor):
           unverified  no traceable verification yet (or no leader on record)
           blocked     the city's site refuses scripts: check it by hand
           no_name     the page loaded but no leader name could be read
-          wrong_link  the official page is missing, dead, moved or off-site
+          wrong_link  the official page is missing, dead, moved or off-site, or
+                      discovery found the website itself wrong (link_note,
+                      suggested_url; listed first when there is a suggestion)
 
         Tabs are disjoint (a city is in at most one). A city whose leader was
         verified in the last QUEUE_FRESH_DAYS days is in none.
@@ -696,10 +705,11 @@ def attach_admin_routes(app, get_cursor):
                 + """
                 select city_id, city, state_code, population, governance_type,
                        leader_id, full_name, leader_title, last_verified_at, url,
-                       mayor_url, last_check_outcome, last_check_at
+                       mayor_url, last_check_outcome, last_check_at,
+                       link_note, suggested_url
                 from classified
                 where queue = %s
-                order by population desc nulls last, city
+                order by (suggested_url is null), population desc nulls last, city
                 limit %s offset %s
                 """,
                 (kind, limit, offset),
