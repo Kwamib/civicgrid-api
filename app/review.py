@@ -41,6 +41,7 @@ from fastapi import Body, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from app.admin import require_admin
+from app.leaders import former_leader_id, reinstate
 from app.names import derive_last_name, same_person_spelling, strip_titles
 from app.webhook_events import EVENT_LEADER_ROTATED, EVENT_LEADER_UPDATED, emit_event
 
@@ -180,6 +181,17 @@ def _publish_leader(
         (city_id,),
     )
     demoted = [dict(r) for r in cur.fetchall()]
+    # Already in this city's history? Restore that row (see app/leaders.py).
+    former_id = former_leader_id(cur, city_id, "chief_executive", full_name)
+    if former_id is not None:
+        new_leader = reinstate(
+            cur, former_id, full_name=strip_titles(full_name),
+            last_name=derive_last_name(full_name), leader_title=title,
+            returning="id, city_id, full_name, last_name, leader_title, role, "
+                      "political_party, is_current, created_at, updated_at, last_verified_at",
+        )
+        _record_manual_verification(cur, city_id, full_name, source)
+        return new_leader, demoted
     cur.execute(
         """
         insert into leaders (

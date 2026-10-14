@@ -26,8 +26,15 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, EmailStr, Field
 
 from app.auth import forget_key, generate_key
+from app.leaders import former_leader_id, reinstate
 from app.names import NameNeedsReview, clean_full_name, derive_last_name, same_person_spelling
 from app.webhook_events import EVENT_LEADER_ROTATED, EVENT_LEADER_UPDATED, emit_event
+
+LEADER_RETURNING = (
+    "id, city_id, full_name, last_name, leader_title, political_party, "
+    "year_elected, next_election_year, tenure_years, term_length_years, "
+    "role, is_current, created_at, updated_at, last_verified_at"
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -365,6 +372,7 @@ def attach_admin_routes(app, get_cursor):
             if not city:
                 raise HTTPException(status_code=404, detail=f"City {city_id} not found.")
 
+            new_leader = None
             # 2. Same person already current? Update that row in place instead of
             #    rotating, so history doesn't gain a fake transition.
             cur.execute(
@@ -428,7 +436,22 @@ def attach_admin_routes(app, get_cursor):
                 )
                 demoted = cur.fetchall()
 
-                # 3. Insert the new current leader.
+                # 3. Already in this city's history (Simi Valley CA, Oct 2026)?
+                #    Make that row current again rather than adding a second one.
+                former_id = former_leader_id(cur, city_id, req.role, full_name)
+                if former_id is not None:
+                    new_leader = reinstate(
+                        cur, former_id, full_name=full_name, last_name=last_name,
+                        leader_title=req.leader_title, political_party=req.political_party,
+                        year_elected=req.year_elected,
+                        next_election_year=req.next_election_year,
+                        tenure_years=req.tenure_years,
+                        term_length_years=req.term_length_years,
+                        returning=LEADER_RETURNING,
+                    )
+
+            if new_leader is None:
+                # 4. Insert the new current leader.
                 cur.execute(
                     """
                     insert into leaders (
