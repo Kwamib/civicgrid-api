@@ -185,10 +185,13 @@ def _publish_leader(
     former_id = former_leader_id(cur, city_id, "chief_executive", full_name)
     if former_id is not None:
         new_leader = reinstate(
-            cur, former_id, full_name=strip_titles(full_name),
-            last_name=derive_last_name(full_name), leader_title=title,
+            cur,
+            former_id,
+            full_name=strip_titles(full_name),
+            last_name=derive_last_name(full_name),
+            leader_title=title,
             returning="id, city_id, full_name, last_name, leader_title, role, "
-                      "political_party, is_current, created_at, updated_at, last_verified_at",
+            "political_party, is_current, created_at, updated_at, last_verified_at",
         )
         _record_manual_verification(cur, city_id, full_name, source)
         return new_leader, demoted

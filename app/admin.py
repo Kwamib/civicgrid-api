@@ -441,8 +441,12 @@ def attach_admin_routes(app, get_cursor):
                 former_id = former_leader_id(cur, city_id, req.role, full_name)
                 if former_id is not None:
                     new_leader = reinstate(
-                        cur, former_id, full_name=full_name, last_name=last_name,
-                        leader_title=req.leader_title, political_party=req.political_party,
+                        cur,
+                        former_id,
+                        full_name=full_name,
+                        last_name=last_name,
+                        leader_title=req.leader_title,
+                        political_party=req.political_party,
                         year_elected=req.year_elected,
                         next_election_year=req.next_election_year,
                         tenure_years=req.tenure_years,

@@ -27,10 +27,20 @@ def former_leader_id(cur, city_id: int, role: str, full_name: str) -> int | None
     return None
 
 
-def reinstate(cur, leader_id: int, *, full_name: str, last_name: str,
-              leader_title: str | None, returning: str, political_party=None,
-              year_elected=None, next_election_year=None, tenure_years=None,
-              term_length_years=None) -> dict:
+def reinstate(
+    cur,
+    leader_id: int,
+    *,
+    full_name: str,
+    last_name: str,
+    leader_title: str | None,
+    returning: str,
+    political_party=None,
+    year_elected=None,
+    next_election_year=None,
+    tenure_years=None,
+    term_length_years=None,
+) -> dict:
     """Make a former row current again, verified now. Call after demoting the incumbent."""
     cur.execute(
         f"""
@@ -50,7 +60,16 @@ def reinstate(cur, leader_id: int, *, full_name: str, last_name: str,
         where id = %s
         returning {returning}
         """,
-        (full_name, last_name, leader_title, political_party, year_elected,
-         next_election_year, tenure_years, term_length_years, leader_id),
+        (
+            full_name,
+            last_name,
+            leader_title,
+            political_party,
+            year_elected,
+            next_election_year,
+            tenure_years,
+            term_length_years,
+            leader_id,
+        ),
     )
     return dict(cur.fetchone())
