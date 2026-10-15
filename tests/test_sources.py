@@ -23,6 +23,10 @@ from app.sources import source_problem
         ("https://www.homewoodal.net/", "Homewood", "IL", "https://www.homewoodil.gov"),
         ("https://www.cityofsalemnj.org/", "Salem", "OR", "https://www.cityofsalem.net"),
         ("https://www.kcmo.gov/mayor", "Kansas City", "MO", "https://wycokck.org"),
+        # stored website but doesn't name the city
+        ("https://www.rose.net/mayor", "Thomasville", "GA", "https://www.rose.net"),
+        # names the city, no stored website to compare
+        ("https://thomasville.org/", "Thomasville", "GA", None),
         ("not a url", "Anytown", "OH", None),
     ],
 )
@@ -51,6 +55,9 @@ def test_needs_confirmation(source, city, state, city_url):
             "https://www.in.gov/cities/logansport/",
         ),
         ("www.redbanktn.gov/mayor", "Red Bank", "TN", None),
+        # non-government site that is the stored website and names the city
+        ("https://thomasville.org/mayor", "Thomasville", "GA", "https://thomasville.org/"),
+        ("https://www.arvada.org/council", "Arvada", "CO", "https://www.arvada.org"),
     ],
 )
 def test_city_own_site_is_accepted(source, city, state, city_url):
