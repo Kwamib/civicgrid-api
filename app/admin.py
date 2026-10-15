@@ -28,6 +28,7 @@ from pydantic import BaseModel, EmailStr, Field
 from app.auth import forget_key, generate_key
 from app.leaders import former_leader_id, reinstate
 from app.names import NameNeedsReview, clean_full_name, derive_last_name, same_person_spelling
+from app.sources import source_problem
 from app.webhook_events import EVENT_LEADER_ROTATED, EVENT_LEADER_UPDATED, emit_event
 
 LEADER_RETURNING = (
@@ -126,6 +127,10 @@ class RotateLeaderRequest(BaseModel):
     # (e.g. "Quiton Lucas" -> "Quinton Lucas"): update the row in place even
     # when the names differ by more than spacing or an initial.
     same_person: bool = False
+    # A chief-executive save is recorded as a human verification with `source`
+    # as its evidence. A source that isn't plausibly the city's own site
+    # (app/sources.py) is refused unless the reviewer confirms they checked it.
+    confirm_source: bool = False
 
 
 class CityLinksRequest(BaseModel):
@@ -365,12 +370,26 @@ def attach_admin_routes(app, get_cursor):
         with get_cursor() as cur:
             # 1. Confirm the city exists; also grab display fields for the response.
             cur.execute(
-                "select id, city, state_code from cities where id = %s",
+                "select id, city, state_code, url from cities where id = %s",
                 (city_id,),
             )
             city = cur.fetchone()
             if not city:
                 raise HTTPException(status_code=404, detail=f"City {city_id} not found.")
+            if req.role == "chief_executive" and req.source and not req.confirm_source:
+                problem = source_problem(req.source, city["city"], city["state_code"], city["url"])
+                if problem:
+                    raise HTTPException(
+                        status_code=422,
+                        detail={
+                            "error": "source_not_official",
+                            "message": (
+                                f"Source: {problem}. This save records the leader as "
+                                "verified from that page. Use the city's own page, or tick "
+                                "'I checked this source is the city's own official page'."
+                            ),
+                        },
+                    )
 
             new_leader = None
             # 2. Same person already current? Update that row in place instead of

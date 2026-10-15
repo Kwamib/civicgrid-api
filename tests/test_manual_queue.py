@@ -91,7 +91,11 @@ def test_a_reviewer_save_clears_the_city(client, queue):  # noqa: F811
     r = client.post(
         f"/admin/cities/{queue['blocked']}/leaders",
         headers=AUTH,
-        json={"full_name": "Pat Lee", "leader_title": "Mayor", "source": "https://x.gov/mayor"},
+        json={
+            "full_name": "Pat Lee",
+            "leader_title": "Mayor",
+            "source": "https://wallton.gov/mayor",
+        },
     )
     assert r.status_code == 201, r.text
     assert "Wallton" not in _get(client, "blocked")[0]

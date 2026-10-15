@@ -110,6 +110,9 @@ def test_same_person_flag_fixes_spelling_in_place(client, kc):  # noqa: F811
             "leader_title": "Mayor",
             "source": "https://www.kcmo.gov/city-hall/city-officials/mayor-quinton-lucas",
             "same_person": True,
+            # kcmo.gov doesn't contain "Kansas City" and the stored website is
+            # wrong (wycokck.org), so the reviewer confirms the source.
+            "confirm_source": True,
         },
     )
     assert r.status_code == 201, r.text
@@ -155,3 +158,42 @@ def test_same_person_flag_needs_a_current_leader(client):  # noqa: F811
         json={"full_name": "Pat Lee", "same_person": True},
     )
     assert r.status_code == 409, r.text
+
+
+def test_off_site_source_is_refused_without_confirmation(client, kc):  # noqa: F811
+    """Oct 15, 2026: Thomasville GA was 'verified' from rose.net."""
+    cid, lid = kc
+    body = {"full_name": "Quinton Lucas", "leader_title": "Mayor", "source": "https://www.rose.net"}
+    r = client.post(f"/admin/cities/{cid}/leaders", headers=AUTH, json=body)
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"]["error"] == "source_not_official"
+    assert _leaders(cid)[0]["full_name"] == "Quiton Lucas", "nothing saved"
+    n = _sql("select count(*) as n from verification_results where city_id = %s", (cid,))[0]["n"]
+    assert n == 0, "no verification recorded"
+
+
+def test_confirmed_source_saves_and_administrator_is_not_checked(client, kc):  # noqa: F811
+    cid, _ = kc
+    r = client.post(
+        f"/admin/cities/{cid}/leaders",
+        headers=AUTH,
+        json={
+            "full_name": "Quinton Lucas",
+            "leader_title": "Mayor",
+            "same_person": True,
+            "source": "https://www.kcmo.gov/mayor",
+            "confirm_source": True,
+        },
+    )
+    assert r.status_code == 201, r.text
+    r = client.post(
+        f"/admin/cities/{cid}/leaders",
+        headers=AUTH,
+        json={
+            "full_name": "Brian Platt",
+            "leader_title": "City Manager",
+            "role": "chief_administrator",
+            "source": "https://www.kcmo.gov/manager",
+        },
+    )
+    assert r.status_code == 201, "administrator saves record no verification, so no check"
