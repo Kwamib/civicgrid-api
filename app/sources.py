@@ -12,7 +12,9 @@ The rule, checked before a chief-executive save:
   - .gov / .gov.pr whose host contains the city's name, or the host of the
     city's stored website                    accepted
   - any other .gov                           needs confirmation
-  - anything else (.org, .com, .net ...)     needs confirmation
+  - .org, .com, .net ... on the city's stored website whose address
+    contains the city's name (thomasville.org)  accepted
+  - anything else                            needs confirmation
 
 "Needs confirmation" means the reviewer ticks that they checked the page is
 the city's own; it is a pause, not a ban (kcmo.gov, lacity.gov, dsm.city).
@@ -64,12 +66,15 @@ def source_problem(
         if m.group(1) == state_code.lower():
             return None
         return f"{host} is a .{m.group(1)}.us address, not {state_code}"
+    named = any(k in _letters(host) for k in _name_keys(city))
+    site = _host(city_url)
+    on_site = bool(site) and (host == site or host.endswith("." + site))
     if host.endswith(".gov") or host.endswith(".gov.pr"):
-        hostletters = _letters(host)
-        if any(k in hostletters for k in _name_keys(city)):
-            return None
-        site = _host(city_url)
-        if site and (host == site or host.endswith("." + site)):
+        if named or on_site:
             return None
         return f"{host} doesn't look like {city}'s own site"
+    # Not a government domain: fine only when it is the stored website AND the
+    # address names the city, so a wrong stored website (rose.net) still asks.
+    if named and on_site:
+        return None
     return f"{host} is not a .gov or .{state_code.lower()}.us address"
