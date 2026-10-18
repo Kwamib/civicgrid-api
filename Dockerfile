@@ -5,7 +5,7 @@
 # Installs Python deps into a virtualenv we'll copy into the final image.
 # This stage has compilers and headers; the final image won't.
 # =========================================
-FROM python:3.13-slim AS builder
+FROM python:3.14-slim AS builder
 
 # Don't write .pyc files; don't buffer stdout/stderr. Standard for containers.
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -36,7 +36,7 @@ RUN python -m venv /opt/venv \
 # Minimal image: Python + the venv from the builder + our code.
 # No compilers, no apt cache, no build artifacts.
 # =========================================
-FROM python:3.13-slim AS runtime
+FROM python:3.14-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
