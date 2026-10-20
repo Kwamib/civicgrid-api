@@ -613,6 +613,7 @@ def attach_admin_routes(app, get_cursor):
         q: str = "",
         only_unverified: bool = False,
         limit: int = 25,
+        city_id: int | None = None,
     ):
         """Search cities by name for the admin fix-a-city UI.
 
@@ -620,13 +621,21 @@ def attach_admin_routes(app, get_cursor):
         q matches city name (prefix or contained, case-insensitive). If
         only_unverified is true, restricts to cities whose current leader has
         no last_verified_at (the 'needs attention' set).
+
+        city_id returns that one city instead (q is ignored), for Fix-a-city
+        links like /admin/cities?id=2140. City name plus state isn't unique;
+        the id is.
         """
         require_admin(authorization)
         q = (q or "").strip()
         limit = max(1, min(limit, 100))
 
-        where = ["c.city ilike %s"]
-        params: list = [f"%{q}%"]
+        if city_id is not None:
+            where = ["c.id = %s"]
+            params: list = [city_id]
+        else:
+            where = ["c.city ilike %s"]
+            params = [f"%{q}%"]
         if only_unverified:
             where.append("l.last_verified_at is null")
 
