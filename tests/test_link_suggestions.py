@@ -98,3 +98,21 @@ def test_search_returns_the_note(client, cities):  # noqa: F811
     assert r.status_code == 200, r.text
     row = next(c for c in r.json()["cities"] if c["state_code"] == "LQ")
     assert row["link_note"].startswith("website belongs to")
+
+
+def test_search_by_city_id_returns_only_that_city(client, cities):  # noqa: F811
+    r = client.get(
+        "/admin/cities/search", headers=AUTH, params={"city_id": cities["plain"], "q": "Columbus"}
+    )
+    assert r.status_code == 200, r.text
+    assert [c["city_id"] for c in r.json()["cities"]] == [cities["plain"]], "id wins over q"
+
+
+def test_search_by_city_id_rejects_non_numbers(client, cities):  # noqa: F811
+    r = client.get("/admin/cities/search", headers=AUTH, params={"city_id": "1 or 1=1"})
+    assert r.status_code == 422
+
+
+def test_search_by_city_id_needs_admin(client, cities):  # noqa: F811
+    r = client.get("/admin/cities/search", params={"city_id": cities["plain"]})
+    assert r.status_code in (401, 403)
