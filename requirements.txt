@@ -1,7 +1,7 @@
 # Exact versions, so every image build installs the same thing.
 # These match what production ran on Oct 10, 2026 (image sha-430ea18).
 # Upgrades come through Dependabot pull requests, which CI tests before merge.
-fastapi==0.142.2
+fastapi==0.159.1
 pydantic[email]==2.13.5
 uvicorn[standard]==0.54.0
 psycopg2-binary==2.9.13
