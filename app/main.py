@@ -1,14 +1,18 @@
+import json
 import os
 from contextlib import asynccontextmanager, contextmanager
 from typing import Literal
 from urllib.parse import unquote, urlparse
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 from psycopg2.extras import RealDictCursor
 from psycopg2.pool import SimpleConnectionPool
+from starlette.middleware.base import BaseHTTPMiddleware
 
+from app import cache as rcache
 from app.access import clamp_page_limit, require_bulk_export
 from app.admin import attach_admin_routes
 from app.auth import AuthMiddleware
@@ -88,6 +92,26 @@ def get_cursor():
     finally:
         _pool.putconn(conn)
 
+
+# Admin writes that change published city data clear the shared /cities/all
+# cache so a correction shows up on the next read instead of after the TTL.
+# Matching by path prefix covers every current and future endpoint under them.
+CITY_WRITE_PREFIXES = ("/admin/cities/", "/admin/proposals/")
+
+
+class CacheInvalidationMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        if (
+            request.method not in ("GET", "HEAD", "OPTIONS")
+            and response.status_code < 400
+            and request.url.path.startswith(CITY_WRITE_PREFIXES)
+        ):
+            rcache.invalidate_cities()
+        return response
+
+
+app.add_middleware(CacheInvalidationMiddleware)
 
 # Middleware: AuthMiddleware runs FIRST (outermost), then RateLimitMiddleware.
 # Starlette runs middleware in reverse-add order, so add rate_limit first.
@@ -258,7 +282,7 @@ def list_cities(
 
 
 @app.get("/cities/all")
-def all_cities(request: Request, response: Response):
+def all_cities(request: Request):
     """Bulk fetch endpoint - returns every city with current leader in one query.
 
     Designed for clients that need the full dataset (e.g. the landing page's
@@ -270,8 +294,21 @@ def all_cities(request: Request, response: Response):
     Paid tiers only (see app/access.py). Because access now depends on the
     caller's key, the response is cacheable by the client only ("private"),
     never by a shared/edge cache that could serve it to a free key.
+
+    The encoded body is cached in Redis (app/cache.py) for CITIES_ALL_TTL, so
+    Supabase serves at most one full pull per TTL however many callers there
+    are. The tier check above still runs on every request, cached or not.
+    X-Cache: HIT/MISS shows which path served it.
     """
     require_bulk_export(request)
+    headers = {"Cache-Control": "private, max-age=300"}
+
+    body = rcache.get(rcache.CITIES_ALL_KEY)
+    if body is not None:
+        return Response(
+            content=body, media_type="application/json", headers={**headers, "X-Cache": "HIT"}
+        )
+
     sql = f"""
         {VERIFICATION_CTES}
         select
@@ -294,8 +331,117 @@ def all_cities(request: Request, response: Response):
         cur.execute(sql)
         rows = cur.fetchall()
 
-    response.headers["Cache-Control"] = "private, max-age=300"
-    return {"data": rows, "count": len(rows)}
+    body = json.dumps(
+        {"data": jsonable_encoder(rows), "count": len(rows)}, separators=(",", ":")
+    ).encode()
+    rcache.set(rcache.CITIES_ALL_KEY, body, rcache.CITIES_ALL_TTL)
+    return Response(
+        content=body, media_type="application/json", headers={**headers, "X-Cache": "MISS"}
+    )
+
+
+def _city_history(cur, city_id: int) -> dict:
+    """Provenance and published leadership history for one city.
+
+    Shared by /cities/{id} and /cities/by-slug/{slug} so both return the same
+    history fields.
+    """
+    cur.execute(
+        """
+        select data_source, last_verified_date, created_at
+        from provenance
+        where city_id = %s
+        order by created_at desc
+    """,
+        (city_id,),
+    )
+    prov = cur.fetchall()
+
+    # Published leadership history only: leader rows (current and former, every
+    # role) and reviewer-approved changes. Unpublished findings and reviewer
+    # identities/notes are never exposed here.
+    cur.execute(
+        """
+        select id, full_name, leader_title, role, is_current,
+               created_at as recorded_at, last_verified_at
+        from leaders
+        where city_id = %s
+        order by is_current desc, (role = 'chief_executive') desc,
+                 created_at desc nulls last, id desc
+        limit 25
+    """,
+        (city_id,),
+    )
+    leadership_history = cur.fetchall()
+
+    cur.execute(
+        """
+        select action, before_name, before_title, after_name, after_title,
+               source_url, created_at
+        from review_events
+        where city_id = %s and action in ('accept', 'correct')
+        order by created_at desc
+        limit 25
+    """,
+        (city_id,),
+    )
+    published_changes = cur.fetchall()
+    return {
+        "provenance": prov,
+        "leadership_history": leadership_history,
+        "published_changes": published_changes,
+    }
+
+
+# The web app's citySlug(): lower(city + " " + state_code), runs of anything
+# other than a-z0-9 become "-", leading/trailing "-" trimmed. Kept in SQL so a
+# renamed city's slug can never drift from the stored name. Migration 014 adds
+# an expression index on exactly this expression.
+SLUG_SQL = (
+    "trim(both '-' from regexp_replace(lower(c.city || ' ' || c.state_code), "
+    "'[^a-z0-9]+', '-', 'g'))"
+)
+
+
+@app.get("/cities/by-slug/{slug}")
+def get_city_by_slug(slug: str):
+    """One city by its web slug (e.g. "laurel-md"), with history.
+
+    Returns the same row shape as /cities/all (current leader, administrator and
+    verification fields) plus provenance and published history, so a city page
+    needs one small request instead of the whole dataset.
+
+    If two cities ever share a slug, the most populous wins, which matches the
+    web app's previous first-match behaviour over the population-sorted list.
+    """
+    sql = f"""
+        {VERIFICATION_CTES}
+        select
+            c.id, c.city, c.state_code, c.state_name, c.county, c.metro_area,
+            c.city_type, c.population, c.median_household_income, c.median_age,
+            c.land_area_sq_mi, c.population_density,
+            c.city_budget_text, c.city_budget_numeric, c.city_hall_phone, c.url,
+            l.full_name        as leader_name,
+            l.leader_title     as leader_title,
+            l.political_party  as leader_party,
+            l.year_elected     as leader_year_elected,
+            l.next_election_year as leader_next_election,{ADMINISTRATOR_COLUMNS}
+{VERIFICATION_COLUMNS}
+        from cities c
+        left join leaders l on l.city_id = c.id and l.is_current = true
+                           and l.role = 'chief_executive'
+{ADMINISTRATOR_JOIN}{VERIFICATION_JOINS}        where {SLUG_SQL} = %s
+        order by c.population desc nulls last, c.city asc
+        limit 1
+    """
+    with get_cursor() as cur:
+        cur.execute(sql, (slug.lower(),))
+        city = cur.fetchone()
+        if not city:
+            raise HTTPException(status_code=404, detail="city not found")
+        history = _city_history(cur, city["id"])
+
+    return {"city": city, **history}
 
 
 @app.get("/cities/{city_id}")
@@ -322,53 +468,9 @@ def get_city(city_id: int):
         if not city:
             raise HTTPException(status_code=404, detail="city not found")
 
-        cur.execute(
-            """
-            select data_source, last_verified_date, created_at
-            from provenance
-            where city_id = %s
-            order by created_at desc
-        """,
-            (city_id,),
-        )
-        prov = cur.fetchall()
+        history = _city_history(cur, city_id)
 
-        # Published leadership history only: leader rows (current and former, every
-        # role) and reviewer-approved changes. Unpublished findings and reviewer
-        # identities/notes are never exposed here.
-        cur.execute(
-            """
-            select id, full_name, leader_title, role, is_current,
-                   created_at as recorded_at, last_verified_at
-            from leaders
-            where city_id = %s
-            order by is_current desc, (role = 'chief_executive') desc,
-                     created_at desc nulls last, id desc
-            limit 25
-        """,
-            (city_id,),
-        )
-        leadership_history = cur.fetchall()
-
-        cur.execute(
-            """
-            select action, before_name, before_title, after_name, after_title,
-                   source_url, created_at
-            from review_events
-            where city_id = %s and action in ('accept', 'correct')
-            order by created_at desc
-            limit 25
-        """,
-            (city_id,),
-        )
-        published_changes = cur.fetchall()
-
-    return {
-        "city": city,
-        "provenance": prov,
-        "leadership_history": leadership_history,
-        "published_changes": published_changes,
-    }
+    return {"city": city, **history}
 
 
 @app.get("/leaders/current")

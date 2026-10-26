@@ -409,3 +409,45 @@ def test_free_tier_page_size_is_capped(client, city):
     assert leaders.status_code == 200 and len(leaders.json()["data"]) <= 25
     pro = _key(client, "pro2@example.com", "pro")
     assert len(client.get("/cities?limit=500", headers=pro).json()["data"]) >= 30
+
+
+def test_cities_all_reports_cache_status_without_redis(client, city):
+    """Without REDIS_URL every call queries the database and says so."""
+    city()
+    paid = _key(client, "cache@example.com", "starter")
+    for _ in range(2):
+        r = client.get("/cities/all", headers=paid)
+        assert r.status_code == 200
+        assert r.headers["x-cache"] == "MISS"
+        assert r.headers["cache-control"] == "private, max-age=300"
+
+
+def test_city_by_slug_matches_bulk_row_and_includes_history(client):
+    cid = _sql(
+        "insert into cities (city, state_code, state_name, population, url) "
+        "values ('St. Slugtown', 'WI', 'Wisconsin', 4321, 'https://slugtown.gov') "
+        "returning id"
+    )[0]["id"]
+    _sql(
+        "insert into leaders (city_id, full_name, last_name, leader_title, is_current) "
+        "values (%s, 'Ada Lovelace', 'Lovelace', 'Mayor', true)",
+        (cid,),
+    )
+    api = _key(client, "slug@example.com", "free")  # per-city lookup is open to every tier
+
+    r = client.get("/cities/by-slug/st-slugtown-wi", headers=api)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["city"]["id"] == cid
+    assert body["city"]["leader_name"] == "Ada Lovelace"
+    # Same verification fields the bulk endpoint returns, so pages can switch over.
+    for field in ("leader_last_verified_at", "last_check_result", "official_leader_page"):
+        assert field in body["city"]
+    assert [h["full_name"] for h in body["leadership_history"]] == ["Ada Lovelace"]
+    assert body["published_changes"] == []
+
+    assert client.get("/cities/by-slug/ST-SLUGTOWN-WI", headers=api).status_code == 200
+    missing = client.get("/cities/by-slug/nowhere-zz", headers=api)
+    assert missing.status_code == 404
+    assert missing.json()["detail"] == "city not found"
+    assert client.get("/cities/by-slug/st-slugtown-wi").status_code == 401
