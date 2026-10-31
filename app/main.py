@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from contextlib import asynccontextmanager, contextmanager
 from typing import Literal
@@ -190,6 +191,7 @@ def root():
         "service": "civicgrid-api",
         "version": "0.2.0",
         "endpoints": [
+            "/livez",
             "/health",
             "/cities",
             "/cities/{id}",
@@ -202,15 +204,32 @@ def root():
     }
 
 
+log = logging.getLogger("civicgrid.health")
+
+
+@app.get("/livez")
+def livez():
+    """Liveness: is this process up and answering requests?
+
+    Deliberately does not touch the database. Kubernetes restarts a pod whose
+    liveness check fails, and restarting the API can't fix a database outage,
+    so a database problem must only fail readiness (/health), never liveness.
+    """
+    return {"status": "ok"}
+
+
 @app.get("/health")
 def health():
+    """Readiness: can this pod serve real requests, database included?"""
     try:
         with get_cursor() as cur:
             cur.execute("select 1 as ok")
             row = cur.fetchone()
         return {"status": "ok", "db": row["ok"] == 1}
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"db unavailable: {e}") from e
+    except Exception:
+        # Log the real error; never send it to an unauthenticated caller.
+        log.exception("health check: database unavailable")
+        raise HTTPException(status_code=503, detail="db unavailable") from None
 
 
 @app.get("/cities")
