@@ -46,9 +46,11 @@ resources:
     cpu: 500m
     memory: 256Mi
 
+# Liveness: is the process alive? /livez never touches the database, so a
+# database outage fails readiness (/health) only, and pods aren't restarted.
 livenessProbe:
   httpGet:
-    path: /health
+    path: /livez
     port: http
   initialDelaySeconds: 10
   periodSeconds: 30
