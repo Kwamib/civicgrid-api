@@ -33,6 +33,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 # Routes that do not require authentication.
 PUBLIC_PATHS: set[str] = {
     "/",
+    "/livez",
     "/health",
     "/docs",
     "/redoc",
